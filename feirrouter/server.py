@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .providers.catalog import CATALOG, BY_PREFIX, CHAT_PREFIXES, MODEL_SEED, parse_slug, IMAGE_CANDIDATES, AUDIO_CANDIDATES
 from .providers.base import ChatRequest, default_provider
-from .routing.engine import QuotaLedger, CircuitBreaker, build_chain, resolve_tier_slug
+from .routing.engine import QuotaLedger, CircuitBreaker, build_chain, resolve_tier_slug, ledger_key, UPSTREAM_GROUPS
 from .routing.strategies import STRATEGIES
 from .translation import formats as F
 from .translation.thinking import to_anthropic_blocks, extract_thinking
@@ -193,7 +193,8 @@ async def run_chain(messages: list[dict], wanted: str, strategy: str, stream: bo
         spec = BY_PREFIX.get(prov)
         if spec and spec.env_key and not key:
             continue  # no key → skip silently (quota-aware)
-        qk = (prov, model, "")
+        upstream = UPSTREAM_GROUPS.get(prov, prov)
+        qk = ledger_key(prov, model)
         if not ledger.allow(qk):
             continue
         async with sema:
@@ -203,7 +204,7 @@ async def run_chain(messages: list[dict], wanted: str, strategy: str, stream: bo
                 data = await default_provider.chat(req, key, base, settings.FEIR_TIMEOUT)
                 dt = (time.time() - t0) * 1000
                 ledger.record(qk, 0)
-                breaker.success(prov)
+                breaker.success(upstream)
                 LAST_GOOD = (prov, model)
                 get_store().log(prov, model, strategy, dt, status=200)
                 fire_webhooks("request.completed", {"provider": prov, "model": model, "strategy": strategy})
@@ -211,7 +212,7 @@ async def run_chain(messages: list[dict], wanted: str, strategy: str, stream: bo
             except Exception as e:  # noqa: BLE001 — fallback chain must swallow
                 status = 429 if "429" in str(e) else 500
                 ledger.fail(qk, status)
-                breaker.error(prov)
+                breaker.error(upstream)
                 get_store().log(prov, model, strategy, (time.time() - t0) * 1000, status=status)
                 last_err = e
                 continue
@@ -744,10 +745,19 @@ async def agent_card():
 def main():
     import uvicorn
     import argparse
+    import socket
     ap = argparse.ArgumentParser(prog="feir-server")
     ap.add_argument("--port", type=int, default=settings.FEIR_PORT)
     ap.add_argument("--host", default=settings.FEIR_HOST)
     a = ap.parse_args()
     get_store()
+    for port, who in [(3001, "FreeLLMAPI?"), (20128, "OmniRoute?"), (8082, "free-claude-code?"), (3456, "CCR?")]:
+        s = socket.socket()
+        s.settimeout(0.3)
+        try:
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                print(f"WARN: port {port} busy ({who} may be running) — shared keys would burn quota twice. Stop the other gateway or use different keys.")
+        finally:
+            s.close()
     print(f"FeirRouter on http://{a.host}:{a.port}  admin=/admin  api=/v1  key={unified_key()[:10]}...")
     uvicorn.run(app, host=a.host, port=a.port)

@@ -1,0 +1,155 @@
+"""Тесты роутинга: стратегии, ledger, breaker, tiers, alias-дедупликация, failover.
+
+Ответ на критику: раньше тестировалось только 'API отвечает', теперь — сама маршрутизация.
+"""
+import asyncio
+import time
+from types import SimpleNamespace
+
+import pytest
+
+import feirrouter.server as S
+from feirrouter.routing.strategies import order_candidates
+from feirrouter.routing.engine import QuotaLedger, CircuitBreaker, resolve_tier_slug, ledger_key, UPSTREAM_GROUPS
+
+
+def mk(name, **kw):
+    d = {"provider": name, "model": f"{name}-m", "priority": 5, "intelligence": 7,
+         "price": 1.0, "penalty": 0, "open": True, "load": 0, "latency_ms": 500,
+         "errors": 0, "rpm_left": 30, "tpd_left": 9000, "quota_reset_s": 3600,
+         "cache_affinity": 0, "context": 128000}
+    d.update(kw)
+    return d
+
+
+def test_strategy_priority():
+    cs = [mk("a", priority=1), mk("b", priority=9)]
+    assert order_candidates("priority", cs)[0]["provider"] == "b"
+
+
+def test_strategy_cost_optimized():
+    cs = [mk("a", price=5.0, intelligence=9), mk("b", price=0.0, intelligence=7)]
+    assert order_candidates("cost-optimized", cs)[0]["provider"] == "b"
+
+
+def test_strategy_round_robin_rotates():
+    cs = [mk("a"), mk("b"), mk("c")]
+    first = [c["provider"] for c in order_candidates("round-robin", cs)]
+    second = [c["provider"] for c in order_candidates("round-robin", cs)]
+    assert first != second and sorted(first) == ["a", "b", "c"]
+
+
+def test_strategy_least_used_and_headroom():
+    cs = [mk("a", load=10, rpm_left=1, tpd_left=1), mk("b", load=1, rpm_left=99, tpd_left=99)]
+    assert order_candidates("least-used", cs)[0]["provider"] == "b"
+    assert order_candidates("headroom", cs)[0]["provider"] == "b"
+
+
+def test_strategy_lkgp_pins_last_good():
+    cs = [mk("a"), mk("b")]
+    out = order_candidates("lkgp", cs, {"last_good": ("b", "b-m")})
+    assert out[0]["provider"] == "b"
+
+
+def test_strategy_reset_window():
+    cs = [mk("a", quota_reset_s=3600), mk("b", quota_reset_s=60)]
+    assert order_candidates("reset-window", cs)[0]["provider"] == "b"
+
+
+def test_strategy_fusion_panel_first():
+    cs = [mk("a", intelligence=5), mk("b", intelligence=9), mk("c", intelligence=8)]
+    out = order_candidates("fusion", cs)
+    assert out[0]["provider"] == "b"  # самый умный — в панели первым
+
+
+def test_ledger_rpm_and_cooldown():
+    L = QuotaLedger()
+    k = ("groq", "m", "")
+    assert L.allow(k, rpm=2)
+    L.record(k)
+    L.record(k)
+    assert not L.allow(k, rpm=2)  # лимит исчерпан — не пускаем ДО 429
+    L.fail(("x", "m", ""), 429)
+    assert not L.allow(("x", "m", ""))  # cooldown 120с после 429
+
+
+def test_ledger_penalty_decay():
+    L = QuotaLedger()
+    k = ("groq", "m", "")
+    L.fail(k, 500)
+    assert L.penalty[k] > 0
+    for _ in range(30):
+        L.record(k)
+    assert L.penalty[k] == 0  # decay до нуля успешными запросами
+
+
+def test_breaker_three_states():
+    B = CircuitBreaker()
+    assert not B.is_open("groq")
+    for _ in range(5):
+        B.error("groq")
+    assert B.is_open("groq")  # open после 5 ошибок
+    B.opened_at["groq"] = time.time() - 61
+    assert not B.is_open("groq")  # half-open → probe разрешён
+    B.success("groq")
+    assert B.fails["groq"] == 0
+
+
+def test_tier_resolution():
+    s = SimpleNamespace(MODEL="base/m", MODEL_OPUS="o/m", MODEL_SONNET="",
+                        MODEL_HAIKU="h/m", MODEL_FABLE="")
+    assert resolve_tier_slug("claude-opus-4-5", s) == "o/m"
+    assert resolve_tier_slug("claude-sonnet-4", s) == "base/m"  # пустой SONNET → fallback
+    assert resolve_tier_slug("haiku-turbo", s) == "h/m"
+    assert resolve_tier_slug("auto", s) == "base/m"
+
+
+def test_alias_dedup_shared_ledger_key():
+    assert ledger_key("kimi", "k2") == ledger_key("moonshot", "k2") != ledger_key("groq", "k2")
+    assert ledger_key("qwen", "x") == ledger_key("dashscope", "x") == ledger_key("bailian", "x")
+    assert "kimi" in UPSTREAM_GROUPS and UPSTREAM_GROUPS["kimi"] == "moonshot"
+
+
+def _canned(text="hi"):
+    return {"choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+
+def test_failover_next_provider_on_429(monkeypatch):
+    calls = []
+
+    async def fake_chat(req, api_key, base_url, timeout):
+        calls.append(req.model)
+        if len(calls) == 1:
+            raise Exception("429 rate limited")
+        return _canned("second-wins")
+
+    monkeypatch.setattr(S, "ledger", QuotaLedger())
+    monkeypatch.setattr(S, "breaker", CircuitBreaker())
+    monkeypatch.setattr(S, "seed_candidates", lambda: [
+        {**mk("badprov"), "enabled": True}, {**mk("goodprov"), "enabled": True}])
+    monkeypatch.setattr(S, "provider_creds", lambda p: ("k", "http://127.0.0.1:9"))
+    monkeypatch.setattr(S.default_provider, "chat", fake_chat)
+    prov, model, data = asyncio.run(S.run_chain([{"role": "user", "content": "hi"}], "auto", "priority", False))
+    assert data["choices"][0]["message"]["content"] == "second-wins"
+    assert len(calls) == 2  # первый упал → второй подхватил
+
+
+def test_shared_upstream_cooldown_skips_alias(monkeypatch):
+    """kimi упал с 429 → moonshot (тот же апстрим) пропускается: общий счётчик работает."""
+    calls = []
+
+    async def always_429(req, api_key, base_url, timeout):
+        calls.append(req.model)
+        raise Exception("429 rate limited")
+
+    monkeypatch.setattr(S, "ledger", QuotaLedger())
+    monkeypatch.setattr(S, "breaker", CircuitBreaker())
+    monkeypatch.setattr(S, "seed_candidates", lambda: [
+        {**mk("kimi", priority=9), "model": "k2", "enabled": True},
+        {**mk("moonshot", priority=8), "model": "k2", "enabled": True}])
+    monkeypatch.setattr(S, "provider_creds", lambda p: ("k", "http://127.0.0.1:9"))
+    monkeypatch.setattr(S.default_provider, "chat", always_429)
+    with pytest.raises(Exception):
+        asyncio.run(S.run_chain([{"role": "user", "content": "hi"}], "auto", "priority", False))
+    assert len(calls) == 1  # второй кандидат — тот же апстрим на cooldown → не дёргаем

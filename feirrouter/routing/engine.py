@@ -85,18 +85,39 @@ class CircuitBreaker:
 
 TIER_ORDER = ["subscription", "api", "cheap", "free", "local"]
 
+# ---- дедупликация upstream: разные префиксы — один реальный апстрим ----
+# Без этого qwen/dashscope/bailian (все — Alibaba) или kimi/moonshot получили бы
+# независимые quota-счётчики и втрое превысили бы реальный лимит ключа.
+UPSTREAM_GROUPS: dict[str, str] = {
+    "kimi": "moonshot", "moonshot": "moonshot",
+    "qwen": "alibaba", "dashscope": "alibaba", "bailian": "alibaba",
+    "gemini": "google", "gemini_oauth": "google",
+    "anthropic": "anthropic", "claude_oauth": "anthropic",
+    "openai": "openai", "codex_oauth": "openai",
+    "opencode_zen": "opencode", "opencode_go": "opencode",
+    "codestral": "mistral", "mistral": "mistral",
+    "lmstudio": "local", "llamacpp": "local", "ollama": "local", "vllm": "local",
+    "textgen": "local", "koboldcpp": "local", "jan": "local", "gpt4all": "local",
+    "xinference": "local", "llamafile": "local", "custom": "local",
+}
+
+
+def ledger_key(provider: str, model: str) -> tuple:
+    """Канонический ключ quota-учёта: alias-группы делят один счётчик."""
+    return (UPSTREAM_GROUPS.get(provider, provider), model, "")
+
 
 def resolve_tier_slug(requested_model: str, settings) -> str:
     """FCC per-tier: opus/sonnet/haiku/fable substrings → MODEL_* override else MODEL/auto."""
     m = (requested_model or "").lower()
-    if "fable" in m and getattr(settings, "MODEL_FABLE", ""):
-        return settings.MODEL_FABLE
-    if "opus" in m and settings.MODEL_OPUS:
-        return settings.MODEL_OPUS
-    if "sonnet" in m and settings.MODEL_SONNET:
-        return settings.MODEL_SONNET
-    if "haiku" in m and settings.MODEL_HAIKU:
-        return settings.MODEL_HAIKU
+    if "fable" in m:
+        return getattr(settings, "MODEL_FABLE", "") or settings.MODEL
+    if "opus" in m:
+        return settings.MODEL_OPUS or settings.MODEL
+    if "sonnet" in m:
+        return settings.MODEL_SONNET or settings.MODEL
+    if "haiku" in m:
+        return settings.MODEL_HAIKU or settings.MODEL
     if requested_model and requested_model not in ("auto",) and not requested_model.startswith("auto"):
         # explicit slug passes through (incl. provider/model)
         if "/" in requested_model or requested_model in ("opus", "sonnet", "haiku", "fable"):
@@ -127,8 +148,8 @@ def build_chain(model_slug: str, strategy: str, ledger: QuotaLedger, breaker: Ci
     for c in seed_models:
         spec = BY_PREFIX.get(c["provider"])
         tier = spec.tier if spec else "api"
-        c = {**c, "penalty": ledger.penalty.get((c["provider"], c["model"], ""), 0.0),
-             "open": not breaker.is_open(c["provider"])}
+        c = {**c, "penalty": ledger.penalty.get(ledger_key(c["provider"], c["model"]), 0.0),
+             "open": not breaker.is_open(UPSTREAM_GROUPS.get(c["provider"], c["provider"]))}
         by_tier[tier].append(c)
     # requested explicit provider jumps queue (LKGP-friendly)
     for tier in TIER_ORDER:

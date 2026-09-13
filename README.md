@@ -39,13 +39,16 @@ Claude Code · Codex · OpenCode · Cline · Cursor · Aider · Gemini CLI · ..
 ## Quick Start (Windows / Linux / Mac)
 
 ```powershell
-cd C:\Users\EMUL\Desktop\FeirRouter
+git clone https://github.com/Golopmoui3/FeirRouter
+cd FeirRouter
 pip install -r requirements.txt
-copy .env.example .env   # впиши ключи
-python -m feirrouter --port 8081
+python -m feirrouter setup     # интерактивный визард: стратегия, MODEL, ключи, проверка связи
+python -m feirrouter serve     # старт шлюза
 # Dashboard: http://127.0.0.1:8081/admin
 # API base:  http://127.0.0.1:8081/v1
 ```
+
+Без визарда — вручную: `copy .env.example .env` (Windows) / `cp .env.example .env` (Linux/Mac), вписать ключи.
 
 Подключить агента в 1 команду:
 
@@ -74,15 +77,24 @@ curl http://127.0.0.1:8081/v1/chat/completions \
 Модели-алиасы:
 - `auto` — баланс (LKGP + 16-факторный скор)
 - `auto/coding`, `auto/fast`, `auto/cheap`, `auto/reasoning`, `auto/vision`, `auto/offline`, `auto/chaos`
-- `fusion:qwen+deepseek+glm` — параллельный опрос панели + judge-синтез (упрощённо: первый здоровый + пометка)
-- ` opus / sonnet / haiku / fable` — тиры Claude Code (маппятся на MODEL_OPUS и т.д.)
+- `fusion:qwen+deepseek+glm` — панель топ-3 (сейчас: упорядоченная панель, первый здоровый отвечает; полный параллельный fan-out + judge — roadmap)
+- `opus / sonnet / haiku / fable` — тиры Claude Code (маппятся на MODEL_OPUS и т.д., пустой оверрайд → MODEL)
+
+## Сколько реально бесплатных токенов?
+
+Честно: **никакой общей цифры мы не заявляем**. Агрегат зависит только от ключей, которые вобьёшь ты:
+`python -m feirrouter doctor` покажет готовые провайдеры, ориентиры бюджетов — в `docs/PROVIDERS.md`
+(`free_budget` у каждого + живой статус в `GET /api/providers`).
+Цифры upstream-проектов (7.4B у FreeLLMAPI, 1.5B у OmniRoute) — их маркетинговая оценка их покрытия,
+а не наша. Плюс дедупликация alias-групп (`kimi`/`moonshot`, `qwen`/`dashscope`/`bailian` делят один
+quota-счётчик, см. `UPSTREAM_GROUPS` в `routing/engine.py`) сознательно *уменьшает* сумму — зато не врёт.
 
 ## Конфиг (.env)
 
 Смотри `.env.example`. Главное:
 - `MODEL`, `MODEL_OPUS`, `MODEL_SONNET`, `MODEL_HAIKU`, `MODEL_FABLE` — фолбэк + per-tier (идея FCC)
 - `FEIR_STRATEGY=auto` — одна из 20 (см. `docs/ROUTING.md`)
-- `*_API_KEY` / `*_BASE_URL` — ключи 70+ провайдеров (см. `docs/PROVIDERS.md`)
+- `*_API_KEY` / `*_BASE_URL` — ключи 100+ провайдеров (см. `docs/PROVIDERS.md`), либо визард `setup`, либо vault API `POST /api/keys`
 - `FEIR_UNIFIED_KEY` — единый исходящий ключ (`feir-...`), если пуст — сгенерируется
 - `FEIR_MASTER_KEY` — пароль для AES-GCM шифрования ключей в SQLite
 
@@ -101,20 +113,16 @@ feirrouter/
   security/keys.py   # AES-GCM + unified key
   observability/store.py # SQLite: usage, logs, vault, chain, memory, webhooks
   admin/ui.html      # Dashboard: Keys / Chain / Logs / Quota
-  cli.py             # setup-*, launch-*, doctor
-docs/ ARCHITECTURE.md PROVIDERS.md ROUTING.md
-tests/ smoke (12 тестов)
+  cli.py             # setup-визард, setup-*, launch-*, doctor, benchmark
+docs/ ARCHITECTURE.md PROVIDERS.md ROUTING.md BENCHMARKS.md
+tests/ 33 теста: smoke API + стратегии + ledger/breaker/tiers + failover + пайплайн
 ```
 
-## GitHub — опубликовать свой репозиторий
+## Статус проекта
 
-Локальный git уже проинициализируй и пушь (инструкция ниже в ответе ассистента):
+Репозиторий: https://github.com/Golopmoui3/FeirRouter (public, `main`).
+Это **реализация с нуля по мотивам** трёх проектов (inspired by + портированная логика), а не форк:
+автосинхронизации с upstream нет — сверка вручную через `POST /api/catalog/sync` (signed feed) и `docs/SYNC.md`.
 
-```powershell
-git init; git add .; git commit -m "feat: FeirRouter v1 — FCC+FreeLLMAPI+OmniRoute united"
-gh repo create FeirRouter --public --source=. --push
-# или вручную: создай пустой репо на github.com и:
-git remote add origin https://github.com/<ты>/FeirRouter.git; git push -u origin main
-```
-
-Лицензия MIT. ToS-friendly: используем только официальные API/ключи, чужие ключи не вшиваем, реверс-инжиниринг не делаем.
+Лицензия MIT. ToS-friendly: используем только официальные API и ключи пользователя, чужие ключи не вшиваем,
+реверс-инжиниринг не делаем. Ключи из чужих аккаунтов/«позаимствованные» — ответственность запускающего.
