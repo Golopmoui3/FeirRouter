@@ -153,3 +153,53 @@ def test_shared_upstream_cooldown_skips_alias(monkeypatch):
     with pytest.raises(Exception):
         asyncio.run(S.run_chain([{"role": "user", "content": "hi"}], "auto", "priority", False))
     assert len(calls) == 1  # второй кандидат — тот же апстрим на cooldown → не дёргаем
+
+
+def test_oauth_401_reresolves_once(monkeypatch):
+    """401 у подписочного тира → один повтор с перечитанным токеном, а не уход на запасного."""
+    chat_calls, creds_calls = [], []
+
+    async def flaky_oauth(req, api_key, base_url, timeout):
+        chat_calls.append(api_key)
+        if len(chat_calls) == 1:
+            raise Exception("401 Unauthorized")
+        return _canned("oauth-recovered")
+
+    def counting_creds(p):
+        creds_calls.append(p)
+        return ("STALE" if len(creds_calls) == 1 else "FRESH", "http://127.0.0.1:9")
+
+    monkeypatch.setattr(S, "ledger", QuotaLedger())
+    monkeypatch.setattr(S, "breaker", CircuitBreaker())
+    monkeypatch.setattr(S, "seed_candidates", lambda: [{**mk("codex_oauth"), "enabled": True}])
+    monkeypatch.setattr(S, "provider_creds", counting_creds)
+    monkeypatch.setattr(S.default_provider, "chat", flaky_oauth)
+    prov, model, data = asyncio.run(S.run_chain([{"role": "user", "content": "hi"}], "auto", "priority", False))
+    assert data["choices"][0]["message"]["content"] == "oauth-recovered"
+    assert chat_calls == ["STALE", "FRESH"]  # повтор пошёл уже со свежим ключом
+    assert creds_calls == ["codex_oauth", "codex_oauth"]
+
+
+def test_non_oauth_401_no_retry(monkeypatch):
+    """401 у обычного API-ключа повтора не даёт — сразу failover (повтор бессмыслен)."""
+    calls = []
+
+    async def always_401(req, api_key, base_url, timeout):
+        calls.append(1)
+        raise Exception("401 Unauthorized")
+
+    monkeypatch.setattr(S, "ledger", QuotaLedger())
+    monkeypatch.setattr(S, "breaker", CircuitBreaker())
+    monkeypatch.setattr(S, "seed_candidates", lambda: [{**mk("groq"), "enabled": True}])
+    monkeypatch.setattr(S, "provider_creds", lambda p: ("k", "http://127.0.0.1:9"))
+    monkeypatch.setattr(S.default_provider, "chat", always_401)
+    with pytest.raises(Exception):
+        asyncio.run(S.run_chain([{"role": "user", "content": "hi"}], "auto", "priority", False))
+    assert len(calls) == 1
+
+
+def test_status_of_prefers_response_code():
+    resp = SimpleNamespace(status_code=503)
+    assert S._status_of(SimpleNamespace(response=resp)) == 503
+    assert S._status_of(Exception("429 slow down")) == 429
+    assert S._status_of(Exception("boom")) == 500

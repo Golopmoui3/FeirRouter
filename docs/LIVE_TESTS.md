@@ -47,6 +47,9 @@ print('p50', round(statistics.median(ts)), 'p95', round(statistics.quantiles(ts,
 Дождаться/форсировать протухание `gemini_oauth` (`oauth status`), затем 5 параллельных
 запросов через него. В `GET /api/logs` должна быть **одна** запись `oauth-refresh`
 (singleflight), остальные запросы — либо свежий токен, либо failover, но не 5 refresh подряд.
+Дополнительно: failover при 401 **один раз** перечитывает токен из vault и повторяет ту же
+кандидатуру (покрыто моком `test_oauth_401_reresolves_once`) — вживую проверить, что повтор
+уходит с новым токеном, а не со старым (смотреть пару записей в `/api/logs`).
 
 ## 5. Judge на расходящихся ответах
 

@@ -100,6 +100,7 @@ def test_status_all_none(monkeypatch):
 
 def test_concurrent_refresh_singleflight(monkeypatch):
     """Два параллельных запроса на протухшем токене → ОДИН refresh, а не два."""
+    import threading as _th
     import time as _t
     from concurrent.futures import ThreadPoolExecutor
     calls = []
@@ -111,6 +112,7 @@ def test_concurrent_refresh_singleflight(monkeypatch):
 
     monkeypatch.setattr(O, "refresh_google", fake_refresh)
     O._refreshed_at.pop("gemini_oauth", None)
+    O._refresh_locks["gemini_oauth"] = _th.Lock()  # изоляция: чужой захваченный лок не роняет тест
     blob = json.dumps({"access_token": "OLD", "refresh_token": "RT",
                        "expires_at": _t.time() - 10, "refreshable": True, "client_id": "C"})
 
@@ -131,4 +133,5 @@ def test_concurrent_refresh_singleflight(monkeypatch):
     with ThreadPoolExecutor(max_workers=2) as ex:
         got = list(ex.map(lambda _: O.resolve_if_oauth("gemini_oauth", blob, store), range(2)))
     assert len(calls) == 1
-    assert set(got) <= {"NEW", "OLD"}  # один освежил, второй взял свежее или stale
+    # строго: один поток освежил (NEW), второй застал занятый лок и вернул stale (OLD)
+    assert sorted(got) == ["NEW", "OLD"]

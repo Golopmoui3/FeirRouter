@@ -194,6 +194,24 @@ def impl_for(prefix: str):
     return default_provider
 
 
+def _status_of(e: Exception) -> int:
+    """HTTP-статус ошибки: сначала response.status_code, иначе эвристика по тексту."""
+    code = getattr(getattr(e, "response", None), "status_code", None)
+    if isinstance(code, int):
+        return code
+    s = str(e)
+    if "429" in s:
+        return 429
+    if "401" in s:
+        return 401
+    return 500
+
+
+def _is_oauth_sub(prefix: str) -> bool:
+    spec = BY_PREFIX.get(prefix)
+    return spec is not None and spec.tier == "subscription"
+
+
 async def run_chain(messages: list[dict], wanted: str, strategy: str, stream: bool, ctx: dict | None = None):
     """Try chain with fallback (FreeLLMAPI retry+cooldown, OmniRoute breaker). Returns (provider, model, data)."""
     global LAST_GOOD
@@ -212,26 +230,37 @@ async def run_chain(messages: list[dict], wanted: str, strategy: str, stream: bo
         qk = ledger_key(prov, model)
         if not ledger.allow(qk):
             continue
-        async with sema:
-            t0 = time.time()
-            try:
-                req = ChatRequest(model=model, messages=messages, stream=False,
-                                    extra={"auth": "oauth"} if prov == "claude_oauth" else None)
-                data = await impl_for(prov).chat(req, key, base, settings.FEIR_TIMEOUT)
-                dt = (time.time() - t0) * 1000
-                ledger.record(qk, 0)
-                breaker.success(upstream)
-                LAST_GOOD = (prov, model)
-                get_store().log(prov, model, strategy, dt, status=200)
-                fire_webhooks("request.completed", {"provider": prov, "model": model, "strategy": strategy})
-                return prov, model, data
-            except Exception as e:  # noqa: BLE001 — fallback chain must swallow
-                status = 429 if "429" in str(e) else 500
-                ledger.fail(qk, status)
-                breaker.error(upstream)
-                get_store().log(prov, model, strategy, (time.time() - t0) * 1000, status=status)
-                last_err = e
-                continue
+        retried_401 = False
+        while True:
+            async with sema:
+                t0 = time.time()
+                try:
+                    req = ChatRequest(model=model, messages=messages, stream=False,
+                                        extra={"auth": "oauth"} if prov == "claude_oauth" else None)
+                    data = await impl_for(prov).chat(req, key, base, settings.FEIR_TIMEOUT)
+                    dt = (time.time() - t0) * 1000
+                    ledger.record(qk, 0)
+                    breaker.success(upstream)
+                    LAST_GOOD = (prov, model)
+                    get_store().log(prov, model, strategy, dt, status=200)
+                    fire_webhooks("request.completed", {"provider": prov, "model": model, "strategy": strategy})
+                    return prov, model, data
+                except Exception as e:  # noqa: BLE001 — fallback chain must swallow
+                    status = _status_of(e)
+                    if status == 401 and _is_oauth_sub(prov) and not retried_401:
+                        # токен могли освежить параллельно — один повтор с перечитанным ключом,
+                        # иначе thundering herd зря жёг бы квоту запасных провайдеров
+                        retried_401 = True
+                        try:
+                            key, base = provider_creds(prov)
+                        except Exception:
+                            pass
+                        continue
+                    ledger.fail(qk, status)
+                    breaker.error(upstream)
+                    get_store().log(prov, model, strategy, (time.time() - t0) * 1000, status=status)
+                    last_err = e
+                    break
     raise HTTPException(502, f"all providers failed: {last_err}")
 
 
@@ -297,21 +326,31 @@ async def _try_candidate(cand: dict, messages: list[dict], strategy: str) -> dic
     qk = ledger_key(prov, model)
     if not ledger.allow(qk):
         return None
-    t0 = time.time()
-    try:
-        req = ChatRequest(model=model, messages=messages, stream=False,
-                          extra={"auth": "oauth"} if prov == "claude_oauth" else None)
-        data = await impl_for(prov).chat(req, key, base, settings.FEIR_TIMEOUT)
-        dt = (time.time() - t0) * 1000
-        ledger.record(qk, 0)
-        breaker.success(upstream)
-        get_store().log(prov, model, "fusion", dt, status=200)
-        return {"provider": prov, "model": model, "text": openai_text(data), "latency_ms": dt}
-    except Exception:  # noqa: BLE001 — член панели упал, остальные продолжают
-        ledger.fail(qk, 500)
-        breaker.error(upstream)
-        get_store().log(prov, model, "fusion", (time.time() - t0) * 1000, status=500)
-        return None
+    retried_401 = False
+    while True:
+        t0 = time.time()
+        try:
+            req = ChatRequest(model=model, messages=messages, stream=False,
+                              extra={"auth": "oauth"} if prov == "claude_oauth" else None)
+            data = await impl_for(prov).chat(req, key, base, settings.FEIR_TIMEOUT)
+            dt = (time.time() - t0) * 1000
+            ledger.record(qk, 0)
+            breaker.success(upstream)
+            get_store().log(prov, model, "fusion", dt, status=200)
+            return {"provider": prov, "model": model, "text": openai_text(data), "latency_ms": dt}
+        except Exception as e:  # noqa: BLE001 — член панели упал, остальные продолжают
+            status = _status_of(e)
+            if status == 401 and _is_oauth_sub(prov) and not retried_401:
+                retried_401 = True
+                try:
+                    key, base = provider_creds(prov)
+                except Exception:
+                    pass
+                continue
+            ledger.fail(qk, status)
+            breaker.error(upstream)
+            get_store().log(prov, model, "fusion", (time.time() - t0) * 1000, status=status)
+            return None
 
 
 async def run_fusion(messages: list[dict], strategy: str = "auto", panel_size: int = 3,
