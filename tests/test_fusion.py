@@ -79,3 +79,13 @@ def test_fusion_endpoint_header(monkeypatch):
         "messages": [{"role": "user", "content": "q"}]})
     assert r.status_code == 200
     assert r.headers["X-Routed-Via"].startswith("fusion:")
+
+
+def test_fusion_auto_panel(monkeypatch):
+    """Без explicit-панели топ-N собирается из auto-цепочки сам."""
+    _setup(monkeypatch, {"x": "ans-x", "y": "ans-y", "j": "JUDGED-AUTO"})
+    prov, model, data = asyncio.run(S.run_fusion([{"role": "user", "content": "q"}]))
+    assert data["choices"][0]["message"]["content"] == "JUDGED-AUTO"
+    via = data["_fusion_via"]
+    assert via.startswith("fusion:") and "+judge:cerebras/j" in via
+    assert "groq/x" in via and "deepseek/y" in via
