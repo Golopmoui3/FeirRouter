@@ -19,3 +19,6 @@ clients (Claude Code/Codex/OpenCode/Cline/Cursor/Aider/Gemini CLI/...)
 - `security/keys.py`: AES-256-GCM + unified `feir-` ключ.
 - `observability/store.py`: SQLite.
 - `server.py`: все wire-форматы на одном порту. `cli.py`: setup-*/launch/doctor.
+- `provider_creds` синхронна (внутри — возможный сетевой OAuth-refresh), поэтому все
+  async-пути идут через `aresolve_creds` (`asyncio.to_thread`): event loop не стоит на refresh.
+  `_has_creds` — только проверка наличия ключа, без I/O. Покрыто тестом на перекрытие во времени.

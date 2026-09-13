@@ -203,3 +203,33 @@ def test_status_of_prefers_response_code():
     assert S._status_of(SimpleNamespace(response=resp)) == 503
     assert S._status_of(Exception("429 slow down")) == 429
     assert S._status_of(Exception("boom")) == 500
+
+
+def test_creds_resolution_does_not_stall_loop(monkeypatch):
+    """Медленный резолв ключей (сетевой OAuth-refresh) не стопает event loop:
+    два параллельных run_chain перекрываются во времени."""
+    import time as _t
+
+    def slow_creds(p):
+        _t.sleep(0.3)
+        return ("k", "http://127.0.0.1:9")
+
+    async def fast_chat(req, api_key, base_url, timeout):
+        return _canned("ok")
+
+    monkeypatch.setattr(S, "ledger", QuotaLedger())
+    monkeypatch.setattr(S, "breaker", CircuitBreaker())
+    monkeypatch.setattr(S, "seed_candidates", lambda: [{**mk("groq"), "enabled": True}])
+    monkeypatch.setattr(S, "provider_creds", slow_creds)
+    monkeypatch.setattr(S.default_provider, "chat", fast_chat)
+
+    async def both():
+        return await asyncio.gather(
+            S.run_chain([{"role": "user", "content": "a"}], "auto", "priority", False),
+            S.run_chain([{"role": "user", "content": "b"}], "auto", "priority", False))
+
+    t0 = _t.time()
+    res = asyncio.run(both())
+    dt = _t.time() - t0
+    assert len(res) == 2
+    assert dt < 0.55, f"loop stalled: {dt:.2f}s (serial would be >= 0.6s)"

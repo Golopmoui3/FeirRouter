@@ -26,6 +26,10 @@ def _seeds():
 
 
 def _setup(monkeypatch, texts: dict, fail_models: set | None = None, judge_fail: bool = False):
+    # панель/judge отбираются по НАЛИЧИЮ ключей — эмулируем вбитые ключи пользователя
+    monkeypatch.setenv("GROQ_API_KEY", "t")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "t")
+    monkeypatch.setenv("CEREBRAS_API_KEY", "t")
     async def fake_chat(req, api_key, base_url, timeout):
         if judge_fail and any(m.get("role") == "system" and "strict judge" in str(m.get("content", ""))
                               for m in req.messages):

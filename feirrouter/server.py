@@ -138,6 +138,12 @@ def provider_creds(prefix: str) -> tuple[str, str]:
     return key, base
 
 
+async def aresolve_creds(prefix: str) -> tuple[str, str]:
+    """provider_creds в worker-thread: внутри может быть сетевой OAuth-refresh (0.5–2 с),
+    который нельзя держать на event loop (иначе стоп всего сервера на время refresh)."""
+    return await asyncio.to_thread(provider_creds, prefix)
+
+
 # ---------- guardrails (OmniRoute: PII redaction lite) ----------
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+7|8)?[\s-]?\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?!\d)")
@@ -222,7 +228,7 @@ async def run_chain(messages: list[dict], wanted: str, strategy: str, stream: bo
     last_err: Exception | None = None
     for cand in chain[: max(1, settings.FEIR_MAX_ATTEMPTS)]:
         prov, model = cand["provider"], cand["model"]
-        key, base = provider_creds(prov)
+        key, base = await aresolve_creds(prov)
         spec = BY_PREFIX.get(prov)
         if spec and spec.env_key and not key:
             continue  # no key → skip silently (quota-aware)
@@ -252,7 +258,7 @@ async def run_chain(messages: list[dict], wanted: str, strategy: str, stream: bo
                         # иначе thundering herd зря жёг бы квоту запасных провайдеров
                         retried_401 = True
                         try:
-                            key, base = provider_creds(prov)
+                            key, base = await aresolve_creds(prov)
                         except Exception:
                             pass
                         continue
@@ -272,7 +278,7 @@ async def _passthrough_media(kind: str, body: dict) -> tuple[str, str, dict]:
             "transcriptions": "/audio/transcriptions"}.get(kind, "/images/generations")
     last_err: Exception | None = None
     for prefix in cands:
-        key, base = provider_creds(prefix)
+        key, base = await aresolve_creds(prefix)
         if not key:
             continue
         try:
@@ -292,16 +298,19 @@ async def _passthrough_media(kind: str, body: dict) -> tuple[str, str, dict]:
 
 
 def _has_creds(cand: dict) -> bool:
+    """Только проверка НАЛИЧИЯ ключа (env/vault), без резолва — никакого I/O,
+    в отличие от provider_creds, который может уйти в сетевой OAuth-refresh."""
     spec = BY_PREFIX.get(cand["provider"])
     if spec is None:
         return True
     if not spec.env_key:
         return True  # local/keyless
+    if os.getenv(spec.env_key):
+        return True
     try:
-        key, _ = provider_creds(cand["provider"])
+        return bool(get_store().vault_get(cand["provider"]))
     except Exception:
         return False
-    return bool(key)
 
 
 def _openai_text_resp(text: str, model: str) -> dict:
@@ -316,7 +325,7 @@ async def _try_candidate(cand: dict, messages: list[dict], strategy: str) -> dic
     """Одна попытка панели fusion: ledger + breaker общие с run_chain (shared quota)."""
     prov, model = cand["provider"], cand["model"]
     try:
-        key, base = provider_creds(prov)
+        key, base = await aresolve_creds(prov)
     except Exception:
         return None
     spec = BY_PREFIX.get(prov)
@@ -343,7 +352,7 @@ async def _try_candidate(cand: dict, messages: list[dict], strategy: str) -> dic
             if status == 401 and _is_oauth_sub(prov) and not retried_401:
                 retried_401 = True
                 try:
-                    key, base = provider_creds(prov)
+                    key, base = await aresolve_creds(prov)
                 except Exception:
                     pass
                 continue
@@ -417,7 +426,7 @@ async def run_fusion(messages: list[dict], strategy: str = "auto", panel_size: i
     verdict, judge_id = None, "fallback-longest"
     if judge is not None:
         try:
-            key, base = provider_creds(judge["provider"])
+            key, base = await aresolve_creds(judge["provider"])
             req = ChatRequest(model=judge["model"], messages=judge_msgs, stream=False,
                               extra={"auth": "oauth"} if judge["provider"] == "claude_oauth" else None)
             jd = await impl_for(judge["provider"]).chat(req, key, base, settings.FEIR_TIMEOUT)
