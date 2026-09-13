@@ -1,7 +1,7 @@
 # Providers — FeirRouter (union FCC + FreeLLMAPI + OmniRoute)
 
-Полный список — `feirrouter/providers/catalog.py` (60+). Ключи — env (`GROQ_API_KEY` и т.д.), локальные — `*_BASE_URL`.
-`python -m feirrouter doctor` покажет готовые.
+100+ записей в `feirrouter/providers/catalog.py`. Живой статус: `GET /api/providers` или `python -m feirrouter doctor`.
+Ключи — через env **или** шифрованный vault: `POST /api/keys {provider, api_key}` (AES-256-GCM, в ответах ключи не светятся).
 
 | prefix | title | tier | free |
 |---|---|---|---|

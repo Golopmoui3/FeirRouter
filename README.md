@@ -1,4 +1,5 @@
 # FeirRouter — Ultimate Free LLM Router
+![status](https://img.shields.io/badge/status-working-green) ![license](https://img.shields.io/badge/license-MIT-blue) ![providers](https://img.shields.io/badge/providers-100%2B-orange) ![strategies](https://img.shields.io/badge/strategies-20-purple)
 ### 1 endpoint. Все провайдеры. Ноль даунтайма.
 
 **FeirRouter** = `free-claude-code` + `FreeLLMAPI` + `OmniRoute` во едино.
@@ -12,9 +13,10 @@
 | 352 провайдера (152 free), 19 стратегий, 4-tier fallback `Subscription→API→Cheap→Free`, `auto` 16-факторный скоринг + LKGP, `context-relay`, `cache-optimized`, `headroom`, `reset-aware`, translation `OpenAI↔Claude↔Gemini↔Responses`, RTK+Caveman компрессия 15–95%, circuit-breaker 3-state, quota-aware scheduling, multi-account round-robin, MCP 110 tools + A2A + REST + webhooks, Memory FTS5+vector, guardrails, evals, TLS stealth, 3-level proxy, Dashboard, 80+ CLI команд, Desktop/PWA | **OmniRoute** (diegosouzapw) | Максимальное покрытие, умный роутинг, продакшн-наблюдаемость |
 
 Итого в FeirRouter:
-- **70+ провайдеров из коробки** (union всех трёх + custom OpenAI-compatible: LM Studio, llama.cpp, Ollama, vLLM)
+- **100+ провайдеров из коробки** (полный union FCC 50 + FreeLLMAPI 34 + пул OmniRoute: chat, embeddings, audio, images/video, search + 10 локальных + custom)
 - **20 стратегий роутинга** + per-tier + 4-tier + auto-combo + fusion + pipeline
-- **Все wire-форматы**: OpenAI Chat / Responses / Completions, Anthropic Messages, Gemini, Ollama — на одном порту
+- **Все wire-форматы**: OpenAI Chat / Responses / Completions, Anthropic Messages, Gemini native `/v1beta`, Ollama `/api/*` — на одном порту
+- **Шифрованный vault ключей + API**, управление fallback-chain через API, self-updating signed-каталог, guardrails (PII), webhooks, memory, evals, A2A-карточка
 - **Шифрование ключей, quota-трекинг, circuit-breaker, компрессия, оптимизации, observability, Admin UI, MCP, CLI-лаунчеры для 10+ агентов**
 
 ```
@@ -88,20 +90,20 @@ curl http://127.0.0.1:8081/v1/chat/completions \
 
 ```
 feirrouter/
-  server.py          # FastAPI: все /v1/* + /admin + /mcp
+  server.py          # FastAPI: /v1/* + /v1beta + Ollama /api/* + media + /admin + /mcp + /api
   config.py          # Settings из env
-  providers/base.py  # BaseProvider, OpenAICompatible, AnthropicLike, GeminiLike
-  providers/catalog.py # 70+ провайдеров, free-бюджеты
+  providers/base.py  # BaseProvider, OpenAICompatibleProvider, AnthropicLike, GeminiLike
+  providers/catalog.py # 100+ провайдеров (union FCC+FreeLLMAPI+OmniRoute), free-бюджеты
   routing/strategies.py # 20 стратегий
   routing/engine.py  # QuotaLedger + CircuitBreaker + Penalty + Auto-scorer + FallbackChain
   translation/       # formats / thinking / tools
   optimization/      # probes (5 перехватов FCC) / compression (RTK-lite + Caveman-lite)
   security/keys.py   # AES-GCM + unified key
-  observability/store.py # SQLite: usage, logs, quota snapshots
+  observability/store.py # SQLite: usage, logs, vault, chain, memory, webhooks
   admin/ui.html      # Dashboard: Keys / Chain / Logs / Quota
-  cli.py             # setup-*, launch-*, doctor, benchmark
+  cli.py             # setup-*, launch-*, doctor
 docs/ ARCHITECTURE.md PROVIDERS.md ROUTING.md
-tests/ smoke
+tests/ smoke (12 тестов)
 ```
 
 ## GitHub — опубликовать свой репозиторий
