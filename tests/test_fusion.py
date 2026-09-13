@@ -77,6 +77,21 @@ def test_fusion_judge_down_falls_back_to_longest(monkeypatch):
     assert "fallback-longest" in data["_fusion_via"]
 
 
+def test_has_creds_contract(monkeypatch):
+    """Контракт _has_creds зафиксирован явно: presence-check без резолва и decrypt.
+    Следующий, кто поменяет _has_creds, увидит сразу, что именно ломает."""
+    from types import SimpleNamespace
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setattr(S, "get_store",
+                        lambda: SimpleNamespace(vault_get=lambda p: "enc-blob" if p == "groq" else ""))
+    assert S._has_creds({"provider": "groq"}) is True    # ключ во vault → True, без decrypt
+    assert S._has_creds({"provider": "deepseek"}) is False  # ни env, ни vault → False
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "t")
+    assert S._has_creds({"provider": "deepseek"}) is True  # env достаточно
+    assert S._has_creds({"provider": "lmstudio"}) is True  # local/keyless всегда True
+    assert S._has_creds({"provider": "nope_unknown"}) is True  # неизвестный префикс не блокируем
+
+
 def test_fusion_endpoint_header(monkeypatch):
     from fastapi.testclient import TestClient
     _setup(monkeypatch, {"x": "ans-x", "y": "ans-y", "j": "J"})

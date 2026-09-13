@@ -228,8 +228,16 @@ def test_creds_resolution_does_not_stall_loop(monkeypatch):
             S.run_chain([{"role": "user", "content": "a"}], "auto", "priority", False),
             S.run_chain([{"role": "user", "content": "b"}], "auto", "priority", False))
 
+    async def one():
+        return await S.run_chain([{"role": "user", "content": "a"}], "auto", "priority", False)
+
+    t0 = _t.time()
+    asyncio.run(one())
+    serial = _t.time() - t0
     t0 = _t.time()
     res = asyncio.run(both())
-    dt = _t.time() - t0
+    parallel = _t.time() - t0
     assert len(res) == 2
-    assert dt < 0.55, f"loop stalled: {dt:.2f}s (serial would be >= 0.6s)"
+    # относительное сравнение вместо абсолютного порога: устойчиво к скорости раннера.
+    # Сериализация в loop дала бы parallel ≈ serial (2×0.3), перекрытие даёт ≈ serial/2.
+    assert parallel < serial * 0.75, f"loop stalled: serial={serial:.2f}s parallel={parallel:.2f}s"

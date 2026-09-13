@@ -140,7 +140,9 @@ def provider_creds(prefix: str) -> tuple[str, str]:
 
 async def aresolve_creds(prefix: str) -> tuple[str, str]:
     """provider_creds в worker-thread: внутри может быть сетевой OAuth-refresh (0.5–2 с),
-    который нельзя держать на event loop (иначе стоп всего сервера на время refresh)."""
+    который нельзя держать на event loop (иначе стоп всего сервера на время refresh).
+    NOTE: пул дефолтный (min(32, cpu+4)). Если живые тесты покажут p99-хвосты именно при
+    параллельных refresh — дать сюда отдельный executor, а не копать loop."""
     return await asyncio.to_thread(provider_creds, prefix)
 
 
