@@ -37,6 +37,16 @@ class OpenAICompatibleProvider(BaseProvider):
 
     api_format = "openai"
 
+    def _headers(self, api_key: str, stream: bool = False) -> dict:
+        # keyless/key_optional провайдеры (Pollinations anon, local): пустой Bearer
+        # некоторые апстримы отвергают — заголовок просто не шлём
+        h = {"Content-Type": "application/json"}
+        if api_key and api_key != "local":
+            h["Authorization"] = f"Bearer {api_key}"
+        if stream:
+            h["Accept"] = "text/event-stream"
+        return h
+
     async def chat(self, req: ChatRequest, api_key: str, base_url: str, timeout: float) -> dict:
         payload: dict = {"model": req.model, "messages": req.messages, "stream": False}
         if req.max_tokens is not None:
@@ -45,7 +55,7 @@ class OpenAICompatibleProvider(BaseProvider):
             payload["temperature"] = req.temperature
         if req.tools:
             payload["tools"] = req.tools
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        headers = self._headers(api_key)
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.post(base_url.rstrip("/") + "/chat/completions", json=payload, headers=headers)
             r.raise_for_status()
@@ -59,7 +69,7 @@ class OpenAICompatibleProvider(BaseProvider):
             payload["temperature"] = req.temperature
         if req.tools:
             payload["tools"] = req.tools
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Accept": "text/event-stream"}
+        headers = self._headers(api_key, stream=True)
         async with httpx.AsyncClient(timeout=timeout) as c:
             async with c.stream("POST", base_url.rstrip("/") + "/chat/completions", json=payload, headers=headers) as r:
                 r.raise_for_status()

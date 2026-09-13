@@ -241,3 +241,23 @@ def test_creds_resolution_does_not_stall_loop(monkeypatch):
     assert len(res) == 2
     # относительное сравнение вместо абсолютного порога: устойчиво к скорости раннера.
     assert parallel < serial * 0.75, f"loop stalled: serial={serial:.2f}s parallel={parallel:.2f}s"
+
+
+def test_soft_error_200_fails_over(monkeypatch):
+    """Провайдер вернул 200 с жалобой на бюджет в теле → failover к следующему, а не 'ответ'."""
+
+    async def flaky(req, api_key, base_url, timeout):
+        if req.model == "x":
+            return _canned("The API key has reached its budget. Raise it please.")
+        return _canned("real-answer")
+
+    monkeypatch.setattr(S, "ledger", QuotaLedger())
+    monkeypatch.setattr(S, "breaker", CircuitBreaker())
+    monkeypatch.setattr(S, "seed_candidates", lambda: [
+        {**mk("groq", priority=9), "model": "x", "enabled": True},
+        {**mk("deepseek", priority=8), "model": "y", "enabled": True}])
+    monkeypatch.setattr(S, "provider_creds", lambda p: ("k", "http://127.0.0.1:9"))
+    monkeypatch.setattr(S.default_provider, "chat", flaky)
+    prov, model, data = asyncio.run(S.run_chain([{"role": "user", "content": "hi"}], "auto", "priority", False))
+    assert data["choices"][0]["message"]["content"] == "real-answer"
+    assert prov == "deepseek"

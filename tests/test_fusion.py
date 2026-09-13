@@ -89,6 +89,7 @@ def test_has_creds_contract(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "t")
     assert S._has_creds({"provider": "deepseek"}) is True  # env достаточно
     assert S._has_creds({"provider": "lmstudio"}) is True  # local/keyless всегда True
+    assert S._has_creds({"provider": "pollinations"}) is True  # анонимный тир доступен всегда
     assert S._has_creds({"provider": "nope_unknown"}) is True  # неизвестный префикс не блокируем
 
 

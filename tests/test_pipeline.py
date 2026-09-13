@@ -66,3 +66,21 @@ def test_translation_roundtrip():
     assert back[0] == {"role": "system", "content": "sys"}
     assert F.openai_to_gemini(oai)["contents"][0]["role"] == "user"
     assert F.sanitize_openai_response({"choices": [{"message": {"x_groq": 1, "content": "ok"}}]})["choices"][0]["message"] == {"content": "ok"}
+
+
+def test_no_empty_bearer_for_keyless():
+    """Живой урок: пустой `Authorization: Bearer ` отвергается апстримами — не шлём его."""
+    from feirrouter.providers.base import default_provider
+    assert "Authorization" not in default_provider._headers("")
+    assert "Authorization" not in default_provider._headers("local")
+    assert default_provider._headers("sk-live")["Authorization"] == "Bearer sk-live"
+
+
+def test_upstream_soft_error():
+    """Живой урок: Pollinations отдал 'reached its budget' с HTTP 200 — такое в failover."""
+    from feirrouter.translation.tools import is_upstream_soft_error
+    assert is_upstream_soft_error("The API key used for this request has reached its budget. Raise it...")
+    assert is_upstream_soft_error("Error: incorrect api key provided")
+    assert not is_upstream_soft_error("OK")
+    assert not is_upstream_soft_error("I can't help with that — content policy.")
+    assert not is_upstream_soft_error("def quicksort(a):\n    return sorted(a)")

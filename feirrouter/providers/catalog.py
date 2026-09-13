@@ -18,6 +18,7 @@ class ProviderSpec:
     free_budget: str = ""
     api_format: str = "openai"  # openai | anthropic | gemini
     chat: bool = True
+    key_optional: bool = False  # True = апстрим пускает анонимно (напр. Pollinations)
 
 
 CATALOG: list[ProviderSpec] = [
@@ -57,7 +58,7 @@ CATALOG: list[ProviderSpec] = [
     ProviderSpec("cloudflare", "Cloudflare Workers AI", "https://api.cloudflare.com/client/v4/accounts", "CLOUDFLARE_API_KEY", "free", True, "~18-45M"),
     ProviderSpec("huggingface", "HuggingFace Router", "https://router.huggingface.co/v1", "HUGGINGFACE_API_KEY", "free", True, "free-tier"),
     ProviderSpec("zai", "Z.ai / Zhipu GLM", "https://api.z.ai/api/paas/v4", "ZAI_API_KEY", "cheap", True, "~30M flash"),
-    ProviderSpec("pollinations", "Pollinations", "https://text.pollinations.ai/openai", "POLLINATIONS_API_KEY", "free", True, "unlimited anon"),
+    ProviderSpec("pollinations", "Pollinations", "https://text.pollinations.ai/openai", "POLLINATIONS_API_KEY", "free", True, "unlimited anon", "openai", True, True),
     ProviderSpec("opencode_zen", "OpenCode Zen", "https://opencode.ai/zen/v1", "OPENCODE_ZEN_API_KEY", "free", True, "free-tier"),
     ProviderSpec("opencode_go", "OpenCode Go", "https://opencode.ai/go/v1", "OPENCODE_GO_API_KEY", "free", True, "free-tier"),
     ProviderSpec("modelscope", "ModelScope", "https://api-inference.modelscope.cn/v1", "MODELSCOPE_API_KEY", "free", True, "free-tier"),

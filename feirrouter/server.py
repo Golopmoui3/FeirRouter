@@ -18,7 +18,7 @@ from .routing.engine import QuotaLedger, CircuitBreaker, build_chain, resolve_ti
 from .routing.strategies import STRATEGIES
 from .translation import formats as F
 from .translation.thinking import to_anthropic_blocks, extract_thinking
-from .translation.tools import parse_text_tool_calls
+from .translation.tools import parse_text_tool_calls, is_upstream_soft_error
 from .optimization.probes import try_probe_mock, mock_anthropic_response, mock_openai_response
 from .optimization.compression import compress_messages
 from .observability.store import Store
@@ -87,8 +87,8 @@ def seed_candidates() -> list[dict]:
         spec = BY_PREFIX.get(prov)
         if spec is None or not spec.chat:
             continue
-        # skip providers without key unless local/keyless (vault or env)
-        has_key = (not spec.env_key) or bool(os.getenv(spec.env_key) or st.vault_get(prov))
+        # skip providers without key unless local/keyless/anonymous (vault or env)
+        has_key = (not spec.env_key) or spec.key_optional or bool(os.getenv(spec.env_key) or st.vault_get(prov))
         slug = f"{prov}/{model}"
         out.append({"provider": prov, "model": model, "intelligence": intel, "price": price,
                     "context": ctx, "priority": (100 - i) + rank.get(slug, 0) * 1000,
@@ -232,7 +232,7 @@ async def run_chain(messages: list[dict], wanted: str, strategy: str, stream: bo
         prov, model = cand["provider"], cand["model"]
         key, base = await aresolve_creds(prov)
         spec = BY_PREFIX.get(prov)
-        if spec and spec.env_key and not key:
+        if spec and spec.env_key and not key and not spec.key_optional:
             continue  # no key → skip silently (quota-aware)
         upstream = UPSTREAM_GROUPS.get(prov, prov)
         qk = ledger_key(prov, model)
@@ -247,6 +247,8 @@ async def run_chain(messages: list[dict], wanted: str, strategy: str, stream: bo
                                         extra={"auth": "oauth"} if prov == "claude_oauth" else None)
                     data = await impl_for(prov).chat(req, key, base, settings.FEIR_TIMEOUT)
                     dt = (time.time() - t0) * 1000
+                    if is_upstream_soft_error(openai_text(data)):
+                        raise Exception("502 upstream soft error: key/budget complaint inside 200 body")
                     ledger.record(qk, 0)
                     breaker.success(upstream)
                     LAST_GOOD = (prov, model)
@@ -307,6 +309,8 @@ def _has_creds(cand: dict) -> bool:
         return True
     if not spec.env_key:
         return True  # local/keyless
+    if spec.key_optional:
+        return True  # анонимный тир — доступен всегда
     if os.getenv(spec.env_key):
         return True
     try:
@@ -331,7 +335,7 @@ async def _try_candidate(cand: dict, messages: list[dict], strategy: str) -> dic
     except Exception:
         return None
     spec = BY_PREFIX.get(prov)
-    if spec and spec.env_key and not key:
+    if spec and spec.env_key and not key and not spec.key_optional:
         return None
     upstream = UPSTREAM_GROUPS.get(prov, prov)
     qk = ledger_key(prov, model)
@@ -345,6 +349,8 @@ async def _try_candidate(cand: dict, messages: list[dict], strategy: str) -> dic
                               extra={"auth": "oauth"} if prov == "claude_oauth" else None)
             data = await impl_for(prov).chat(req, key, base, settings.FEIR_TIMEOUT)
             dt = (time.time() - t0) * 1000
+            if is_upstream_soft_error(openai_text(data)):
+                raise Exception("502 upstream soft error: key/budget complaint inside 200 body")
             ledger.record(qk, 0)
             breaker.success(upstream)
             get_store().log(prov, model, "fusion", dt, status=200)
@@ -433,6 +439,8 @@ async def run_fusion(messages: list[dict], strategy: str = "auto", panel_size: i
                               extra={"auth": "oauth"} if judge["provider"] == "claude_oauth" else None)
             jd = await impl_for(judge["provider"]).chat(req, key, base, settings.FEIR_TIMEOUT)
             verdict = openai_text(jd)
+            if is_upstream_soft_error(verdict):
+                verdict = None  # judge вернул жалобу вместо вердикта → честный фолбэк
             ledger.record(ledger_key(judge["provider"], judge["model"]), 0)
             judge_id = f"{judge['provider']}/{judge['model']}"
             LAST_GOOD = (judge["provider"], judge["model"])
