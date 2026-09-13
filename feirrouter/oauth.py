@@ -25,6 +25,7 @@ import secrets
 import threading
 import time
 import webbrowser
+from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlencode, urlparse, parse_qs
@@ -37,6 +38,11 @@ GOOGLE_SCOPES = "https://www.googleapis.com/auth/cloud-platform"
 CALLBACK_PORT = 8765
 
 SUBSCRIPTION_PROVIDERS = ("claude_oauth", "codex_oauth", "gemini_oauth")
+
+# singleflight для refresh: два параллельных запроса на протухшем токене
+# должны дать ОДИН refresh, а не два (иначе гонка роняет оба).
+_refresh_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
+_refreshed_at: dict[str, float] = {}
 
 
 def pkce_pair() -> tuple[str, str]:
@@ -189,16 +195,41 @@ def resolve_if_oauth(prefix: str, value: str, store) -> str:
     if blob.get("expires_at", 0) - time.time() > 60:
         return blob["access_token"]
     # протух: google умеем рефрешить, остальные — только re-import
-    if blob.get("refreshable") and blob.get("refresh_token") and prefix == "gemini_oauth":
+    if not (blob.get("refreshable") and blob.get("refresh_token") and prefix == "gemini_oauth"):
+        return blob["access_token"]
+    lock = _refresh_locks[prefix]
+    if not lock.acquire(blocking=False):
+        # кто-то уже рефрешит прямо сейчас — отдаём stale, апстрим 401 подстрахует failover
+        return blob["access_token"]
+    try:
+        # второй в очереди? может, первый уже всё освежил — перечитать vault
+        if _refreshed_at.get(prefix, 0) > time.time() - 30:
+            try:
+                from .security.keys import decrypt
+                from .config import settings
+                fresh_raw = store.vault_get(prefix)
+                if fresh_raw:
+                    b2 = json.loads(decrypt(settings.FEIR_MASTER_KEY, fresh_raw))
+                    if b2.get("expires_at", 0) - time.time() > 60:
+                        return b2["access_token"]
+            except Exception:
+                pass
+            return blob["access_token"]
         try:
-            new_blob = refresh_google(blob)
             from .security.keys import encrypt
             from .config import settings
+            new_blob = refresh_google(blob)
             store.vault_set(prefix, encrypt(settings.FEIR_MASTER_KEY, json.dumps(new_blob)))
+            _refreshed_at[prefix] = time.time()
+            try:
+                store.log(prefix, "oauth-refresh", "oauth", 0, status=200)
+            except Exception:
+                pass  # у store может не быть log (тестовые заглушки) — refresh важнее
             return new_blob["access_token"]
         except Exception:
             return blob["access_token"]  # пусть апстрим вернёт 401 → сработает failover
-    return blob["access_token"]
+    finally:
+        lock.release()
 
 
 def oauth_status(store) -> list[dict]:

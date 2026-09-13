@@ -115,7 +115,8 @@ feirrouter/
   admin/ui.html      # Dashboard: Keys / Chain / Logs / Quota
   cli.py             # setup-визард, setup-*, launch-*, doctor, benchmark
 docs/ ARCHITECTURE.md PROVIDERS.md ROUTING.md BENCHMARKS.md
-tests/ 47 тестов: smoke API + стратегии + ledger/breaker/tiers + failover + fusion + oauth + пайплайн
+tests/ 52 теста: smoke API + стратегии + ledger/breaker/tiers + failover + fusion + oauth + пайплайн.
+Живой чек-лист (сеть/лимиты/judge глазами) — `docs/LIVE_TESTS.md`.
 ```
 
 ## OAuth-подписки (Tier-1)

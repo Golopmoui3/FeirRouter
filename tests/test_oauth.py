@@ -96,3 +96,39 @@ def test_status_all_none(monkeypatch):
         monkeypatch.delenv(k, raising=False)
     rows = O.oauth_status(SimpleNamespace(vault_get=lambda p: ""))
     assert all(r["source"] == "none" for r in rows) and len(rows) == 3
+
+
+def test_concurrent_refresh_singleflight(monkeypatch):
+    """Два параллельных запроса на протухшем токене → ОДИН refresh, а не два."""
+    import time as _t
+    from concurrent.futures import ThreadPoolExecutor
+    calls = []
+
+    def fake_refresh(blob):
+        calls.append(1)
+        _t.sleep(0.05)
+        return {**blob, "access_token": "NEW", "expires_at": _t.time() + 9999}
+
+    monkeypatch.setattr(O, "refresh_google", fake_refresh)
+    O._refreshed_at.pop("gemini_oauth", None)
+    blob = json.dumps({"access_token": "OLD", "refresh_token": "RT",
+                       "expires_at": _t.time() - 10, "refreshable": True, "client_id": "C"})
+
+    class FakeStore:
+        def __init__(self):
+            self.d = {}
+
+        def vault_set(self, p, v):
+            self.d[p] = v
+
+        def vault_get(self, p):
+            return self.d.get(p, "")
+
+        def log(self, *a, **k):
+            pass
+
+    store = FakeStore()
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        got = list(ex.map(lambda _: O.resolve_if_oauth("gemini_oauth", blob, store), range(2)))
+    assert len(calls) == 1
+    assert set(got) <= {"NEW", "OLD"}  # один освежил, второй взял свежее или stale
