@@ -233,11 +233,11 @@ def test_creds_resolution_does_not_stall_loop(monkeypatch):
 
     t0 = _t.time()
     asyncio.run(one())
-    serial = _t.time() - t0
+    asyncio.run(one())
+    serial = _t.time() - t0  # два последовательных: ~2×0.3
     t0 = _t.time()
     res = asyncio.run(both())
-    parallel = _t.time() - t0
+    parallel = _t.time() - t0  # два параллельных: ~0.3 при перекрытии, ~0.6 при сериализации
     assert len(res) == 2
     # относительное сравнение вместо абсолютного порога: устойчиво к скорости раннера.
-    # Сериализация в loop дала бы parallel ≈ serial (2×0.3), перекрытие даёт ≈ serial/2.
     assert parallel < serial * 0.75, f"loop stalled: serial={serial:.2f}s parallel={parallel:.2f}s"
