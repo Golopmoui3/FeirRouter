@@ -82,5 +82,61 @@ class GeminiLikeProvider(OpenAICompatibleProvider):
     api_format = "gemini"
 
 
+class AnthropicMessagesProvider(BaseProvider):
+    """Native Anthropic /v1/messages call (real Anthropic API + Claude subscription OAuth).
+
+    In: ChatRequest (OpenAI-shape messages). Out: OpenAI-shape response
+    (thinking → reasoning_content, usage mapped), so the shared chain works unchanged.
+    """
+
+    api_format = "anthropic"
+
+    def build_request(self, req: ChatRequest) -> tuple[str, dict, dict]:
+        from ..translation import formats as F
+        system, amsgs = F.openai_to_anthropic(req.messages)
+        body: dict = {"model": req.model, "max_tokens": req.max_tokens or 1024, "messages": amsgs}
+        if system:
+            body["system"] = system
+        if req.tools:
+            body["tools"] = req.tools
+        is_oauth = (req.extra or {}).get("auth") == "oauth" or req.model.startswith("oauth")
+        headers = {"anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+        return ("oauth" if is_oauth else "key", body, headers)
+
+    @staticmethod
+    def normalize(data: dict, model: str) -> dict:
+        text_parts, thinking_parts = [], []
+        for b in data.get("content", []) or []:
+            if b.get("type") == "text":
+                text_parts.append(b.get("text", ""))
+            elif b.get("type") == "thinking":
+                thinking_parts.append(b.get("thinking", ""))
+        msg: dict = {"role": "assistant", "content": "".join(text_parts)}
+        if thinking_parts:
+            msg["reasoning_content"] = "\n".join(thinking_parts)
+        usage = data.get("usage", {}) or {}
+        return {"id": data.get("id", "msg_feir"), "object": "chat.completion",
+                "model": model,
+                "choices": [{"index": 0, "message": msg,
+                             "finish_reason": "stop" if data.get("stop_reason") in (None, "end_turn") else "tool_calls"}],
+                "usage": {"prompt_tokens": usage.get("input_tokens", 0),
+                          "completion_tokens": usage.get("output_tokens", 0),
+                          "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0)}}
+
+    async def chat(self, req: ChatRequest, api_key: str, base_url: str, timeout: float) -> dict:
+        mode, body, headers = self.build_request(req)
+        if mode == "oauth":
+            headers["Authorization"] = f"Bearer {api_key}"
+            headers["anthropic-beta"] = "oauth-2025-04-20"
+        else:
+            headers["x-api-key"] = api_key
+        url = base_url.rstrip("/") + ("" if base_url.rstrip("/").endswith("/messages") else "/messages")
+        async with httpx.AsyncClient(timeout=timeout) as c:
+            r = await c.post(url, json=body, headers=headers)
+            r.raise_for_status()
+            return self.normalize(r.json(), req.model)
+
+
 # Singleton default used when provider has no quirks
 default_provider = OpenAICompatibleProvider()
+anthropic_provider = AnthropicMessagesProvider()

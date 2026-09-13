@@ -170,6 +170,37 @@ def cmd_benchmark(a):
         print("wrote docs/BENCHMARKS.md")
 
 
+def cmd_oauth(a):
+    import json as _json
+    from .config import settings
+    from .observability.store import Store
+    from . import oauth as O
+    from .security.keys import encrypt
+    store = Store(settings.FEIR_DB_PATH)
+    if a.oauth_cmd == "status":
+        for r in O.oauth_status(store):
+            print(f" {r['provider']:15} [{r['source']:5}] {r['note']}")
+        return
+    if a.oauth_cmd == "import":
+        res = O.import_cli_creds()
+        for prov, val in res.items():
+            if isinstance(val, dict):
+                store.vault_set(prov, encrypt(settings.FEIR_MASTER_KEY, _json.dumps(val)))
+                print(f" OK {prov}: imported to encrypted vault")
+            else:
+                print(f" -- {prov}: {val}")
+        return
+    if a.oauth_cmd == "login" and a.provider == "google":
+        cid = a.client_id or input("Google OAuth client_id (Desktop app, Cloud Console): ").strip()
+        if not cid:
+            print("нужен client_id — см. docs/OAUTH.md")
+            return
+        blob = O.login_google(cid, a.client_secret, a.no_browser)
+        store.vault_set("gemini_oauth", encrypt(settings.FEIR_MASTER_KEY, _json.dumps(blob)))
+        print("OK gemini_oauth: token saved to encrypted vault")
+        return
+
+
 def cmd_launch(a):
     from .config import settings
     env = dict(os.environ)
@@ -244,6 +275,15 @@ def main():
     s = sub.add_parser("benchmark")
     s.add_argument("--iters", type=int, default=200)
     s.add_argument("--write", action="store_true")
+    s = sub.add_parser("oauth")
+    o = s.add_subparsers(dest="oauth_cmd")
+    s_login = o.add_parser("login", help="OAuth login (google)")
+    s_login.add_argument("provider", choices=["google"])
+    s_login.add_argument("--client-id", default="")
+    s_login.add_argument("--client-secret", default="")
+    s_login.add_argument("--no-browser", action="store_true")
+    o.add_parser("import", help="import tokens from official CLIs (claude/codex/gemini)")
+    o.add_parser("status", help="oauth token status")
     a, rest = ap.parse_known_args()
     # `python -m feirrouter --port 8081` → serve
     if a.cmd is None:
@@ -269,6 +309,8 @@ def main():
         return cmd_setup_wizard(a)
     if a.cmd == "benchmark":
         return cmd_benchmark(a)
+    if a.cmd == "oauth":
+        return cmd_oauth(a)
     if a.cmd == "serve":
         import sys as _s
         _s.argv = ["feir-server", "--port", str(a.port)]

@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .providers.catalog import CATALOG, BY_PREFIX, CHAT_PREFIXES, MODEL_SEED, parse_slug, IMAGE_CANDIDATES, AUDIO_CANDIDATES
-from .providers.base import ChatRequest, default_provider
+from .providers.base import ChatRequest, default_provider, anthropic_provider
 from .routing.engine import QuotaLedger, CircuitBreaker, build_chain, resolve_tier_slug, ledger_key, UPSTREAM_GROUPS
 from .routing.strategies import STRATEGIES
 from .translation import formats as F
@@ -128,6 +128,13 @@ def provider_creds(prefix: str) -> tuple[str, str]:
                 key = decrypt(settings.FEIR_MASTER_KEY, blob)
             except Exception:
                 key = ""
+    if key and key != "local":
+        # OAuth-блоб {access_token,...} → живой токен (с refresh для google)
+        try:
+            from .oauth import resolve_if_oauth
+            key = resolve_if_oauth(prefix, key, get_store())
+        except Exception:
+            pass
     return key, base
 
 
@@ -179,6 +186,14 @@ def fire_webhooks(event: str, payload: dict):
         pass
 
 
+def impl_for(prefix: str):
+    """Выбор реализации по wire-формату провайдера (openai → default, anthropic → native)."""
+    spec = BY_PREFIX.get(prefix)
+    if spec is not None and spec.api_format == "anthropic":
+        return anthropic_provider
+    return default_provider
+
+
 async def run_chain(messages: list[dict], wanted: str, strategy: str, stream: bool, ctx: dict | None = None):
     """Try chain with fallback (FreeLLMAPI retry+cooldown, OmniRoute breaker). Returns (provider, model, data)."""
     global LAST_GOOD
@@ -200,8 +215,9 @@ async def run_chain(messages: list[dict], wanted: str, strategy: str, stream: bo
         async with sema:
             t0 = time.time()
             try:
-                req = ChatRequest(model=model, messages=messages, stream=False)
-                data = await default_provider.chat(req, key, base, settings.FEIR_TIMEOUT)
+                req = ChatRequest(model=model, messages=messages, stream=False,
+                                    extra={"auth": "oauth"} if prov == "claude_oauth" else None)
+                data = await impl_for(prov).chat(req, key, base, settings.FEIR_TIMEOUT)
                 dt = (time.time() - t0) * 1000
                 ledger.record(qk, 0)
                 breaker.success(upstream)
@@ -244,6 +260,140 @@ async def _passthrough_media(kind: str, body: dict) -> tuple[str, str, dict]:
             last_err = e
             continue
     raise HTTPException(502, f"no media provider available: {last_err}")
+
+
+def _has_creds(cand: dict) -> bool:
+    spec = BY_PREFIX.get(cand["provider"])
+    if spec is None:
+        return True
+    if not spec.env_key:
+        return True  # local/keyless
+    try:
+        key, _ = provider_creds(cand["provider"])
+    except Exception:
+        return False
+    return bool(key)
+
+
+def _openai_text_resp(text: str, model: str) -> dict:
+    return {"id": "chatcmpl-fusion", "object": "chat.completion", "model": model,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": max(1, len(text) // 4),
+                      "total_tokens": max(1, len(text) // 4)}}
+
+
+async def _try_candidate(cand: dict, messages: list[dict], strategy: str) -> dict | None:
+    """Одна попытка панели fusion: ledger + breaker общие с run_chain (shared quota)."""
+    prov, model = cand["provider"], cand["model"]
+    try:
+        key, base = provider_creds(prov)
+    except Exception:
+        return None
+    spec = BY_PREFIX.get(prov)
+    if spec and spec.env_key and not key:
+        return None
+    upstream = UPSTREAM_GROUPS.get(prov, prov)
+    qk = ledger_key(prov, model)
+    if not ledger.allow(qk):
+        return None
+    t0 = time.time()
+    try:
+        req = ChatRequest(model=model, messages=messages, stream=False,
+                          extra={"auth": "oauth"} if prov == "claude_oauth" else None)
+        data = await impl_for(prov).chat(req, key, base, settings.FEIR_TIMEOUT)
+        dt = (time.time() - t0) * 1000
+        ledger.record(qk, 0)
+        breaker.success(upstream)
+        get_store().log(prov, model, "fusion", dt, status=200)
+        return {"provider": prov, "model": model, "text": openai_text(data), "latency_ms": dt}
+    except Exception:  # noqa: BLE001 — член панели упал, остальные продолжают
+        ledger.fail(qk, 500)
+        breaker.error(upstream)
+        get_store().log(prov, model, "fusion", (time.time() - t0) * 1000, status=500)
+        return None
+
+
+async def run_fusion(messages: list[dict], strategy: str = "auto", panel_size: int = 3,
+                     explicit: list[str] | None = None, ctx: dict | None = None):
+    """Параллельный fan-out на панель + judge-синтез.
+
+    model="fusion" → авто-панель топ-N из auto-цепочки;
+    model="fusion:groq/a+deepseek/b" → явная панель.
+    Возвращает (prov, model, openai_data) как run_chain; judge указывается в _fusion_via.
+    """
+    global LAST_GOOD
+    tctx = {"last_good": LAST_GOOD,
+            "need_ctx": sum(len(str(m.get("content", ""))) // 4 for m in messages), **(ctx or {})}
+    if explicit:
+        panel, seen = [], set()
+        for slug in explicit:
+            p, m = parse_slug(slug.strip())
+            if not p or (p, m) in seen:
+                continue
+            seen.add((p, m))
+            panel.append({"provider": p, "model": m, "intelligence": 7, "price": 0,
+                          "priority": 50, "penalty": 0, "open": True})
+    else:
+        chain = build_chain("auto", "auto", ledger, breaker, seed_candidates(), tctx)
+        panel, seen = [], set()
+        for c in chain:
+            k = (c["provider"], c["model"])
+            if k in seen:
+                continue
+            seen.add(k)
+            if not _has_creds(c):
+                continue
+            panel.append(c)
+            if len(panel) >= max(2, panel_size):
+                break
+    if not panel:
+        raise HTTPException(502, "fusion: no panel members with keys")
+    # fan-out: все параллельно, общее время ≈ max, а не сумма
+    results = await asyncio.gather(*[_try_candidate(c, messages, strategy) for c in panel])
+    ok = [r for r in results if r and r.get("text")]
+    fire_webhooks("fusion.completed", {"panel": [f"{c['provider']}/{c['model']}" for c in panel],
+                                       "ok": len(ok)})
+    if not ok:
+        raise HTTPException(502, "fusion: all panel members failed")
+    if len(ok) == 1:
+        s = ok[0]
+        LAST_GOOD = (s["provider"], s["model"])
+        data = _openai_text_resp(s["text"], s["model"])
+        data["_fusion_via"] = f"fusion:{s['provider']}/{s['model']} (single-ok)"
+        return s["provider"], s["model"], data
+    # judge: самый умный из дешёвых, здоровый, с ключом
+    chain = build_chain("auto", "auto", ledger, breaker, seed_candidates(), tctx)
+    judge = next((c for c in chain
+                  if c.get("intelligence", 0) >= 8 and _has_creds(c)
+                  and ledger.allow(ledger_key(c["provider"], c["model"]))), None)
+    last_user = next((str(m.get("content", "")) for m in reversed(messages)
+                      if m.get("role") == "user"), "")
+    cands_txt = "\n\n".join(f"--- Candidate {i + 1} ({r['provider']}/{r['model']}):\n{r['text']}"
+                            for i, r in enumerate(ok))
+    judge_msgs = [
+        {"role": "system", "content": "You are a strict judge. Given the user request and candidate answers, output ONLY the single best final answer. No commentary, no labels."},
+        {"role": "user", "content": f"Request:\n{last_user}\n\n{cands_txt}"},
+    ]
+    verdict, judge_id = None, "fallback-longest"
+    if judge is not None:
+        try:
+            key, base = provider_creds(judge["provider"])
+            req = ChatRequest(model=judge["model"], messages=judge_msgs, stream=False,
+                              extra={"auth": "oauth"} if judge["provider"] == "claude_oauth" else None)
+            jd = await impl_for(judge["provider"]).chat(req, key, base, settings.FEIR_TIMEOUT)
+            verdict = openai_text(jd)
+            ledger.record(ledger_key(judge["provider"], judge["model"]), 0)
+            judge_id = f"{judge['provider']}/{judge['model']}"
+            LAST_GOOD = (judge["provider"], judge["model"])
+        except Exception:  # noqa: BLE001 — judge упал → честный фолбэк
+            verdict = None
+    if not verdict:
+        verdict = max((r["text"] for r in ok), key=len)
+    data = _openai_text_resp(verdict, judge_id)
+    data["_fusion_via"] = f"fusion:{','.join(f'{r['provider']}/{r['model']}' for r in ok)}+judge:{judge_id}"
+    get_store().log("fusion", judge_id, "fusion", sum(r.get("latency_ms", 0) for r in ok), status=200)
+    return "fusion", judge_id, data
 
 
 # ---------- generic helpers ----------
@@ -297,13 +447,20 @@ async def chat_completions(request: Request):
     else:
         comp = {}
     msgs, redacted = apply_guardrails(msgs)
-    wanted = resolve_tier_slug(wanted, settings)
-    # explicit provider/model slug → try it first
-    p0, m0 = parse_slug(wanted)
-    if p0:
-        # move to front by rebuilding seed with priority boost — run_chain handles via MODEL seed; here fast-path:
-        pass
-    prov, model, data = await run_chain(msgs, wanted, strategy, stream)
+    fusion_info: str | None = None
+    if wanted == "fusion" or wanted.startswith("fusion:"):
+        # настоящий параллельный fan-out + judge (а не упорядоченная панель)
+        explicit = wanted.split(":", 1)[1].split("+") if ":" in wanted else None
+        prov, model, data = await run_fusion(msgs, strategy, explicit=explicit)
+        fusion_info = data.pop("_fusion_via", None)
+    else:
+        wanted = resolve_tier_slug(wanted, settings)
+        # explicit provider/model slug → try it first
+        p0, m0 = parse_slug(wanted)
+        if p0:
+            # move to front by rebuilding seed with priority boost — run_chain handles via MODEL seed; here fast-path:
+            pass
+        prov, model, data = await run_chain(msgs, wanted, strategy, stream)
     data = F.sanitize_openai_response(data)
     # heuristic tool parser (FCC): text toolcalls → tool_calls
     txt = openai_text(data)
@@ -317,7 +474,7 @@ async def chat_completions(request: Request):
             data["choices"][0]["finish_reason"] = "tool_calls"
         except Exception:
             pass
-    headers = {"X-Routed-Via": f"{prov}/{model}"}
+    headers = {"X-Routed-Via": fusion_info or f"{prov}/{model}"}
     if comp:
         headers["X-Compression"] = str(comp.get("saved_pct", 0)) + "%"
     if redacted:

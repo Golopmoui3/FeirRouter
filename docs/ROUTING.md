@@ -10,7 +10,13 @@
 - `headroom` / `reset-window` / `reset-aware` — по остаткам квоты и окнам сброса.
 - `context-relay` / `context-optimized` — сессии и большие контексты.
 - `cache-optimized` — affinity для prompt-cache.
-- `fusion` — панель топ-3 (полный fan-out+judge — roadmap).
+- `fusion` — **настоящий параллельный fan-out**: авто-панель топ-3 из auto-цепочки
+  (или явная `fusion:groq/a+deepseek/b`), все члены опрашиваются **concurrently**
+  (`asyncio.gather`, общее время ≈ max, а не сумма), затем judge (самый умный из дешёвых,
+  intelligence ≥ 8) синтезирует один ответ. Фолбэки честные: 1 выжил → его ответ с пометкой
+  `single-ok`; judge упал → самый длинный ответ (`fallback-longest`); все упали → 502.
+  Состав виден в заголовке `X-Routed-Via: fusion:a,b+judge:c`. Judge тоже идёт через
+  ledger/quota — это реальный запрос, не бесплатный.
 - `pipeline` — цепочка шагов (roadmap: выход→вход).
 
 Per-tier (FCC): `opus/sonnet/haiku/fable` в имени модели → `MODEL_OPUS/...` иначе `MODEL`.

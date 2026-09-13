@@ -77,7 +77,7 @@ curl http://127.0.0.1:8081/v1/chat/completions \
 Модели-алиасы:
 - `auto` — баланс (LKGP + 16-факторный скор)
 - `auto/coding`, `auto/fast`, `auto/cheap`, `auto/reasoning`, `auto/vision`, `auto/offline`, `auto/chaos`
-- `fusion:qwen+deepseek+glm` — панель топ-3 (сейчас: упорядоченная панель, первый здоровый отвечает; полный параллельный fan-out + judge — roadmap)
+- `fusion` — параллельный fan-out на панель + judge-синтез (`fusion` = авто-панель топ-3, `fusion:groq/a+deepseek/b` = явная). Состав в `X-Routed-Via`
 - `opus / sonnet / haiku / fable` — тиры Claude Code (маппятся на MODEL_OPUS и т.д., пустой оверрайд → MODEL)
 
 ## Сколько реально бесплатных токенов?
@@ -115,12 +115,23 @@ feirrouter/
   admin/ui.html      # Dashboard: Keys / Chain / Logs / Quota
   cli.py             # setup-визард, setup-*, launch-*, doctor, benchmark
 docs/ ARCHITECTURE.md PROVIDERS.md ROUTING.md BENCHMARKS.md
-tests/ 33 теста: smoke API + стратегии + ledger/breaker/tiers + failover + пайплайн
+tests/ 47 тестов: smoke API + стратегии + ledger/breaker/tiers + failover + fusion + oauth + пайплайн
 ```
+
+## OAuth-подписки (Tier-1)
+
+```powershell
+python -m feirrouter oauth login google --client-id <id>  # настоящий PKCE-флоу, refresh авто
+python -m feirrouter oauth import   # токены из твоих Claude Code / Codex CLI / Gemini CLI
+python -m feirrouter oauth status   # источник, срок, что протухло
+```
+
+Детали и честные ограничения — `docs/OAUTH.md`.
 
 ## Статус проекта
 
 Репозиторий: https://github.com/Golopmoui3/FeirRouter (public, `main`).
+Что осталось в roadmap: TLS-стелс, десктоп-упаковка, Embeddings-rerank провайдеры отдельно от чата.
 Это **реализация с нуля по мотивам** трёх проектов (inspired by + портированная логика), а не форк:
 автосинхронизации с upstream нет — сверка вручную через `POST /api/catalog/sync` (signed feed) и `docs/SYNC.md`.
 
