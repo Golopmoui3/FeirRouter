@@ -1,0 +1,13 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FeirRouter Admin</title><style>body{font-family:system-ui;background:#0b0f14;color:#e6edf3;margin:0}header{padding:16px 20px;background:#11161d;border-bottom:1px solid #222}main{padding:20px;max-width:900px}code{background:#1a2230;padding:2px 6px;border-radius:6px}a{color:#7aa2f7}.card{background:#11161d;border:1px solid #222;border-radius:12px;padding:16px;margin:12px 0}button{background:#238636;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer}pre{white-space:pre-wrap;background:#0d1117;padding:12px;border-radius:8px}</style></head>
+<body><header><b>FeirRouter</b> — FCC + FreeLLMAPI + OmniRoute · <a href="/health">health</a> · <a href="/v1/models">models</a> · <a href="/api/logs">logs</a></header>
+<main>
+<div class="card"><h3>1. Unified ключ</h3><pre id="k">...</pre><button onclick="fetch('/api/unified-key').then(r=>r.json()).then(j=>document.getElementById('k').textContent=JSON.stringify(j,null,2))">Показать ключ (loopback)</button></div>
+<div class="card"><h3>2. Подключение</h3><pre>Base URL: http://127.0.0.1:8081/v1
+Claude Code: ANTHROPIC_BASE_URL=http://127.0.0.1:8081/v1 + ANTHROPIC_AUTH_TOKEN=&lt;key&gt;
+Codex: /v1/responses · OpenAI SDK: base_url=.../v1, model="auto"</pre></div>
+<div class="card"><h3>3. Стратегии (20)</h3><pre>auto · lkgp · priority · weighted · round-robin · p2c · least-used · random · cost-optimized · headroom · reset-window · reset-aware · context-relay · context-optimized · cache-optimized · fusion · pipeline · fill-first · failover · strict-random</pre></div>
+<div class="card"><h3>4. Per-tier (FCC) + 4-tier (OmniRoute)</h3><pre>MODEL / MODEL_OPUS / MODEL_SONNET / MODEL_HAIKU / MODEL_FABLE  (.env)
+цепочка: Subscription → API → Cheap → Free → Local</pre></div>
+<div class="card"><h3>5. Статистика</h3><pre id="s">...</pre><button onclick="fetch('/api/stats').then(r=>r.json()).then(j=>document.getElementById('s').textContent=JSON.stringify(j,null,2))">Обновить</button></div>
+</main></body></html>
