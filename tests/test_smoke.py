@@ -39,6 +39,10 @@ def test_providers_full_union():
     for must in ["nvidia_nim", "open_router", "groq", "lmstudio", "ollama", "deepseek",
                  "qoder", "kiro", "pollinations", "tavily", "elevenlabs", "voyage"]:
         assert must in prefixes, must
+    # контракт с панелью: поле env_key (селект ключей строится по нему)
+    by_prefix = {p["prefix"]: p for p in j["providers"]}
+    assert by_prefix["groq"]["env_key"] == "GROQ_API_KEY"
+    assert by_prefix["lmstudio"]["env_key"] == ""
 
 
 def test_keys_vault_crud():

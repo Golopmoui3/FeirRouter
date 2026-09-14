@@ -1,13 +1,126 @@
 <!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FeirRouter Admin</title><style>body{font-family:system-ui;background:#0b0f14;color:#e6edf3;margin:0}header{padding:16px 20px;background:#11161d;border-bottom:1px solid #222}main{padding:20px;max-width:900px}code{background:#1a2230;padding:2px 6px;border-radius:6px}a{color:#7aa2f7}.card{background:#11161d;border:1px solid #222;border-radius:12px;padding:16px;margin:12px 0}button{background:#238636;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer}pre{white-space:pre-wrap;background:#0d1117;padding:12px;border-radius:8px}</style></head>
-<body><header><b>FeirRouter</b> — FCC + FreeLLMAPI + OmniRoute · <a href="/health">health</a> · <a href="/v1/models">models</a> · <a href="/api/logs">logs</a></header>
+<title>FeirRouter — панель</title>
+<style>
+:root{--bg:#0b0f14;--card:#11161d;--line:#232c38;--tx:#e6edf3;--dim:#8b98a9;--grn:#238636;--red:#da3633;--blu:#7aa2f7;--amb:#d29922}
+*{box-sizing:border-box}body{font-family:system-ui,Segoe UI,Arial;background:var(--bg);color:var(--tx);margin:0}
+header{padding:14px 20px;background:var(--card);border-bottom:1px solid var(--line);display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+header b{font-size:18px}.badge{background:#1a2230;border:1px solid var(--line);border-radius:8px;padding:3px 10px;font-size:13px}
+.badge b{color:var(--blu)}nav{display:flex;gap:6px;padding:12px 20px 0;flex-wrap:wrap}
+nav button{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:8px 8px 0 0;padding:8px 16px;cursor:pointer;font-size:14px}
+nav button.on{background:#1a2230;border-bottom:2px solid var(--blu)}
+main{padding:16px 20px;max-width:1100px}
+.tab{display:none}.tab.on{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin:12px 0}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600}code{background:#1a2230;padding:1px 6px;border-radius:6px;font-size:12px}
+.ok{color:#3fb950}.bad{color:var(--red)}.warn{color:var(--amb)}.dim{color:var(--dim)}
+button.act{background:var(--grn);color:#fff;border:0;border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px}
+button.ghost{background:transparent;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px}
+input,select,textarea{background:#0d1117;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:13px}
+input,select{margin:2px 4px 2px 0}textarea{width:100%;min-height:90px;font-family:inherit}
+pre{white-space:pre-wrap;background:#0d1117;padding:12px;border-radius:8px;font-size:13px;max-height:400px;overflow:auto}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+a{color:var(--blu)}
+</style></head>
+<body>
+<header><b>FeirRouter</b><span class="dim">FCC + FreeLLMAPI + OmniRoute</span>
+<span class="badge">запросы <b id="s_req">…</b></span>
+<span class="badge">токены <b id="s_tok">…</b></span>
+<span class="badge">cost <b id="s_cost">…</b></span>
+<span class="badge">провайдеры <b id="s_prov">…</b></span>
+<span style="flex:1"></span>
+<a href="/health">health</a> <a href="/v1/models">models</a> <a href="/.well-known/agent.json">a2a</a>
+</header>
+<nav id="tabs"></nav>
 <main>
-<div class="card"><h3>1. Unified ключ</h3><pre id="k">...</pre><button onclick="fetch('/api/unified-key').then(r=>r.json()).then(j=>document.getElementById('k').textContent=JSON.stringify(j,null,2))">Показать ключ (loopback)</button></div>
-<div class="card"><h3>2. Подключение</h3><pre>Base URL: http://127.0.0.1:8081/v1
-Claude Code: ANTHROPIC_BASE_URL=http://127.0.0.1:8081/v1 + ANTHROPIC_AUTH_TOKEN=&lt;key&gt;
-Codex: /v1/responses · OpenAI SDK: base_url=.../v1, model="auto"</pre></div>
-<div class="card"><h3>3. Стратегии (20)</h3><pre>auto · lkgp · priority · weighted · round-robin · p2c · least-used · random · cost-optimized · headroom · reset-window · reset-aware · context-relay · context-optimized · cache-optimized · fusion · pipeline · fill-first · failover · strict-random</pre></div>
-<div class="card"><h3>4. Per-tier (FCC) + 4-tier (OmniRoute)</h3><pre>MODEL / MODEL_OPUS / MODEL_SONNET / MODEL_HAIKU / MODEL_FABLE  (.env)
-цепочка: Subscription → API → Cheap → Free → Local</pre></div>
-<div class="card"><h3>5. Статистика</h3><pre id="s">...</pre><button onclick="fetch('/api/stats').then(r=>r.json()).then(j=>document.getElementById('s').textContent=JSON.stringify(j,null,2))">Обновить</button></div>
-</main></body></html>
+<div class="tab" id="t-dash"><div class="card"><h3>Обзор</h3><div id="dash"></div></div>
+<div class="card"><h3>Последние запросы</h3><div id="recent"></div></div></div>
+<div class="tab" id="t-prov"><div class="card"><h3>Провайдеры <span class="dim" id="prov_count"></span></h3>
+<div class="row"><input id="prov_q" placeholder="фильтр…" oninput="renderProv()"></div><div id="prov"></div></div></div>
+<div class="tab" id="t-keys"><div class="card"><h3>Vault ключей (AES-256-GCM, наружу не светятся)</h3><div id="vault"></div>
+<div class="row"><select id="k_prov"></select><input id="k_val" type="password" placeholder="API key…" size="40">
+<button class="act" onclick="keyAdd()">Сохранить</button></div>
+<p class="dim">Локальные провайдеры ключей не требуют. Подписки: <code>oauth import</code> / <code>oauth login</code> в CLI.</p></div></div>
+<div class="tab" id="t-chain"><div class="card"><h3>Fallback-цепочка</h3><p class="dim" id="chain_strat"></p><div id="chain"></div>
+<div class="row"><button class="act" onclick="chainSave()">Сохранить порядок</button>
+<button class="ghost" onclick="chainReset()">Сбросить</button></div></div></div>
+<div class="tab" id="t-logs"><div class="card"><h3>Логи запросов</h3>
+<div class="row"><button class="ghost" onclick="renderLogs()">Обновить</button>
+<label class="dim"><input type="checkbox" id="logs_auto" checked> авто (5с)</label></div><div id="logs"></div></div></div>
+<div class="tab" id="t-play"><div class="card"><h3>Песочница — живой запрос через шлюз</h3>
+<div class="row"><input id="p_model" value="auto" size="28" title="auto, fusion, fusion:a+b, provider/model…">
+<button class="act" onclick="play(false)">Отправить</button>
+<button class="ghost" onclick="play(true)">Как fusion</button><span class="dim" id="p_meta"></span></div>
+<textarea id="p_text">say the word OK and nothing else</textarea><pre id="p_out">…</pre></div>
+<div class="card"><h3>Eval-минипрогон</h3><div class="row"><button class="ghost" onclick="evals()">Запустить evals</button></div><pre id="e_out">…</pre></div></div>
+<div class="tab" id="t-misc"><div class="card"><h3>Память</h3><div id="mem"></div>
+<div class="row"><input id="m_val" placeholder="заметка…" size="50"><button class="act" onclick="memAdd()">Добавить</button></div></div>
+<div class="card"><h3>Webhooks</h3><div id="hooks"></div>
+<div class="row"><input id="h_val" placeholder="https://…" size="50"><button class="act" onclick="hookAdd()">Добавить</button>
+<button class="ghost" onclick="hookClear()">Очистить</button></div></div>
+<div class="card"><h3>Каталог</h3><div id="cat"></div></div></div>
+</main>
+<script>
+const TABS=[["t-dash","Обзор"],["t-prov","Провайдеры"],["t-keys","Ключи"],["t-chain","Цепочка"],["t-logs","Логи"],["t-play","Песочница"],["t-misc","Прочее"]];
+let PROV=[],CHAIN=[];
+const nav=document.getElementById("tabs");
+TABS.forEach(([id,name],i)=>{
+  const b=document.createElement("button");b.textContent=name;
+  if(!i){b.classList.add("on");document.getElementById(id).classList.add("on")}
+  b.onclick=()=>{document.querySelectorAll("nav button").forEach(x=>x.classList.remove("on"));
+    document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
+    b.classList.add("on");document.getElementById(id).classList.add("on")};
+  nav.appendChild(b);
+});
+async function J(u,o){const r=await fetch(u,o);if(!r.ok)throw new Error(r.status+" "+u);return r.json()}
+const esc=s=>String(s??"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+async function stats(){try{const s=await J("/api/stats");
+  s_req.textContent=s.requests;s_tok.textContent=s.tokens;s_cost.textContent="$"+s.cost;
+  const r=await J("/api/logs?n=8");recent.innerHTML=rows(r);
+  dash.innerHTML=`Стратегия по умолчанию: <code>${"auto"}</code> · API: <code>/v1</code> · Ключ: <code>feir-…</code> (кнопка ниже в «Ключах» через <code>/api/unified-key</code> loopback)`;
+}catch(e){}}
+function rows(r){if(!r.length)return '<span class="dim">пусто</span>';
+  return `<table><tr><th>time</th><th>via</th><th>strat</th><th>ms</th><th>tok</th><th>st</th></tr>`+
+  r.map(x=>`<tr><td>${new Date(x.ts*1000).toLocaleTimeString()}</td><td><code>${esc(x.provider)}/${esc(x.model)}</code>${x.mock?' <span class="warn">mock</span>':''}</td><td>${esc(x.strategy)}</td><td>${Math.round(x.latency_ms)}</td><td>${x.in_tok+x.out_tok}</td><td class="${x.status==200?'ok':'bad'}">${x.status}</td></tr>`).join("")+`</table>`}
+async function renderLogs(){try{logs.innerHTML=rows(await J("/api/logs?n=60"))}catch(e){logs.textContent=e}}
+async function loadProv(){PROV=(await J("/api/providers")).providers;
+  s_prov.textContent=PROV.filter(p=>p.ready).length+"/"+PROV.length;
+  prov_count.textContent=`${PROV.length} всего, ${PROV.filter(p=>p.ready).length} готовы`;
+  k_prov.innerHTML=PROV.filter(p=>p.env_key).map(p=>`<option value="${p.prefix}">${p.prefix} — ${esc(p.title)}</option>`).join("");
+  renderProv()}
+function renderProv(){const q=(prov_q.value||"").toLowerCase();
+  const list=PROV.filter(p=>!q||p.prefix.includes(q)||p.title.toLowerCase().includes(q));
+  prov.innerHTML=`<table><tr><th>prefix</th><th>title</th><th>tier</th><th>free</th><th>chat</th><th>ready</th></tr>`+
+  list.map(p=>`<tr><td><code>${p.prefix}</code></td><td>${esc(p.title)}</td><td>${p.tier}</td><td>${p.has_free?esc(p.free_budget||"yes"):"—"}</td><td>${p.chat?"да":"нет"}</td><td class="${p.ready?'ok':'dim'}">${p.ready?"●":"○"}</td></tr>`).join("")+`</table>`}
+async function loadVault(){const v=(await J("/api/keys")).vault;
+  vault.innerHTML=v.length?v.map(k=>`<code>${k.provider}</code> •••• <button class="ghost" onclick="keyDel('${k.provider}')">удалить</button>`).join("<br>"):'<span class="dim">пусто — добавь ниже или через CLI setup</span>'}
+async function keyAdd(){await J("/api/keys",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:k_prov.value,api_key:k_val.value})});k_val.value="";await loadVault();await loadProv()}
+async function keyDel(p){await fetch("/api/keys/"+p,{method:"DELETE"});await loadVault();await loadProv()}
+async function loadChain(){const c=await J("/api/chain");CHAIN=c.chain;chain_strat.textContent="Стратегия: "+c.strategy+" · верх списка = первый кандидат";
+  chain.innerHTML=CHAIN.map((s,i)=>`<div class="row"><code>${i+1}. ${esc(s)}</code><button class="ghost" onclick="chMove(${i},-1)">↑</button><button class="ghost" onclick="chMove(${i},1)">↓</button></div>`).join("")}
+function chMove(i,d){const j=i+d;if(j<0||j>=CHAIN.length)return;[CHAIN[i],CHAIN[j]]=[CHAIN[j],CHAIN[i]];loadChainView()}
+function loadChainView(){chain.innerHTML=CHAIN.map((s,i)=>`<div class="row"><code>${i+1}. ${esc(s)}</code><button class="ghost" onclick="chMove(${i},-1)">↑</button><button class="ghost" onclick="chMove(${i},1)">↓</button></div>`).join("")}
+async function chainSave(){await J("/api/chain",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({chain:CHAIN})});alert("сохранено")}
+async function chainReset(){await J("/api/chain",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({chain:[]})});await loadChain()}
+async function play(asFusion){p_out.textContent="…";p_meta.textContent="";
+  const model=asFusion?(p_model.value.startsWith("fusion")?p_model.value:"fusion"):p_model.value;
+  const t0=performance.now();
+  try{const r=await fetch("/v1/chat/completions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model,messages:[{role:"user",content:p_text.value}]})});
+    const via=r.headers.get("X-Routed-Via"),ms=Math.round(performance.now()-t0);
+    const d=await r.json();p_meta.textContent=`${r.status} · ${via||"?"} · ${ms}ms`;
+    p_out.textContent=(d.choices?.[0]?.message?.content)||JSON.stringify(d).slice(0,2000);
+  }catch(e){p_out.textContent="ERR "+e}}
+async function evals(){e_out.textContent="…";try{e_out.textContent=JSON.stringify(await J("/api/evals/run",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}),null,2)}catch(e){e_out.textContent="ERR "+e}}
+async function loadMem(){const m=(await J("/api/memory")).notes;
+  mem.innerHTML=m.length?m.map(n=>`<div class="row"><code>#${n.id}</code> ${esc(n.note)} <button class="ghost" onclick="memDel(${n.id})">✕</button></div>`).join(""):'<span class="dim">пусто</span>'}
+async function memAdd(){await J("/api/memory",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({note:m_val.value})});m_val.value="";await loadMem()}
+async function memDel(id){await fetch("/api/memory/"+id,{method:"DELETE"});await loadMem()}
+async function loadHooks(){const h=(await J("/api/webhooks")).webhooks;
+  hooks.innerHTML=h.length?h.map(x=>`<code>${esc(x.url)}</code>`).join("<br>"):'<span class="dim">нет</span>'}
+async function hookAdd(){await J("/api/webhooks",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:h_val.value})});h_val.value="";await loadHooks()}
+async function hookClear(){await fetch("/api/webhooks",{method:"DELETE"});await loadHooks()}
+async function loadCat(){const c=await J("/api/catalog");cat.textContent=`seed-моделей: ${c.seed_models}, custom: ${c.custom_models}, pin: ${c.pin_set}`}
+async function boot(){await stats();await loadProv();await loadVault();await loadChain();await renderLogs();await loadMem();await loadHooks();await loadCat();
+  setInterval(stats,5000);setInterval(()=>{if(logs_auto.checked)renderLogs()},5000)}
+boot()
+</script></body></html>

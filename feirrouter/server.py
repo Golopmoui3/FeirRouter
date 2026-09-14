@@ -692,7 +692,7 @@ async def api_providers():
         has = (not p.env_key) or bool(os.getenv(p.env_key) or st.vault_get(p.prefix))
         out.append({"prefix": p.prefix, "title": p.title, "tier": p.tier, "has_free": p.has_free,
                     "free_budget": p.free_budget, "format": p.api_format, "chat": p.chat,
-                    "ready": has, "key_env": p.env_key})
+                    "ready": has, "env_key": p.env_key})
     return {"count": len(out), "providers": out}
 
 
