@@ -102,6 +102,9 @@ def test_tier_resolution():
     assert resolve_tier_slug("claude-sonnet-4", s) == "base/m"  # пустой SONNET → fallback
     assert resolve_tier_slug("haiku-turbo", s) == "h/m"
     assert resolve_tier_slug("auto", s) == "base/m"
+    # живой баг: явный слак провайдера не должен подменяться дефолтом/тирами
+    assert resolve_tier_slug("groq/llama-3.3-70b-versatile", s) == "groq/llama-3.3-70b-versatile"
+    assert resolve_tier_slug("open_router/anthropic/claude-sonnet-x", s) == "open_router/anthropic/claude-sonnet-x"
 
 
 def test_alias_dedup_shared_ledger_key():

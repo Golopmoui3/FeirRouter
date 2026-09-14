@@ -227,6 +227,19 @@ async def run_chain(messages: list[dict], wanted: str, strategy: str, stream: bo
     chain = build_chain(wanted, strategy, ledger, breaker, seed_candidates(), tctx)
     if not chain:
         raise HTTPException(503, "no providers configured — add keys in .env then restart")
+    # явный `provider/model` — вперёд очереди (существующий — со своим quota-состоянием,
+    # неизвестный сиду — синтетикой); остальная цепочка остаётся strategy-фолбэком
+    pfx, mdl = parse_slug(wanted)
+    if pfx:
+        hit = next((c for c in chain if c["provider"] == pfx and c["model"] == mdl), None)
+        if hit is not None:
+            chain.remove(hit)
+            chain.insert(0, hit)
+        else:
+            chain.insert(0, {"provider": pfx, "model": mdl, "intelligence": 7.5, "price": 0,
+                             "priority": 9999, "penalty": 0, "open": True, "load": 0,
+                             "latency_ms": 700, "errors": 0, "rpm_left": 30, "tpd_left": 9000,
+                             "quota_reset_s": 3600, "cache_affinity": 0, "context": 128000})
     last_err: Exception | None = None
     for cand in chain[: max(1, settings.FEIR_MAX_ATTEMPTS)]:
         prov, model = cand["provider"], cand["model"]

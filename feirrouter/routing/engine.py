@@ -108,7 +108,13 @@ def ledger_key(provider: str, model: str) -> tuple:
 
 
 def resolve_tier_slug(requested_model: str, settings) -> str:
-    """FCC per-tier: opus/sonnet/haiku/fable substrings → MODEL_* override else MODEL/auto."""
+    """FCC per-tier: opus/sonnet/haiku/fable substrings → MODEL_* override else MODEL/auto.
+
+    Явный слак `provider/model` с известным префиксом — священен: возвращается как есть,
+    тиры его не перехватывают (иначе `open_router/...sonnet...` угонялся бы в MODEL_SONNET).
+    """
+    if "/" in (requested_model or "") and requested_model.split("/", 1)[0] in BY_PREFIX:
+        return requested_model
     m = (requested_model or "").lower()
     if "fable" in m:
         return getattr(settings, "MODEL_FABLE", "") or settings.MODEL
